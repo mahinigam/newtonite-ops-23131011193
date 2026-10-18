@@ -6,18 +6,21 @@
  *
  * * the moves offered are the server's `available_transitions`, and a viewer is offered
  *   none of them;
- * * a claim is **server-confirmed** — the interface changes because the server said so and
- *   the item was re-read, not because the button was clicked;
- * * a lost race (`409`) and a stale version (`412`) are explained rather than swallowed,
- *   and each leaves the view showing the server's current state;
- * * a conditional write carries the `ETag` from the response header as `If-Match`.
+ * * a claim is **optimistic with a tested rollback** — the row shows as yours immediately,
+ *   and a lost race (`409`) puts it back and replaces it with the server's truth;
+ * * a transition is **server-confirmed** — the interface changes because the server said
+ *   so, and a stale version (`412`) is explained rather than swallowed;
+ * * a conditional write carries the `ETag` from the response header as `If-Match`, including
+ *   the `ETag` a *claim* produced;
+ * * a viewer is offered no way to change the item.
  */
 
-import { describe, expect, it } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { api } from '../../api/client'
+import { sessionStore } from '../../auth/session'
 import { errorResponse, installFetch, jsonResponse, type RecordedRequest } from '../../test/fetch'
 import {
   ITEM_ID,
@@ -32,6 +35,38 @@ import { renderWithClient } from '../../test/render'
 import { ItemDetailPage } from './ItemDetailPage'
 
 const ITEM_PATH = `/api/v1/items/${ITEM_ID}`
+
+/**
+ * The page is only reachable while signed in, and the optimistic claim needs to know *who*
+ * is claiming. Tests that exercise the optimistic path depend on this session existing.
+ */
+beforeEach(() => {
+  sessionStore.start('test-token', {
+    user: NINA,
+    memberships: [membership()],
+    expiresAt: '2099-01-01T00:00:00Z',
+  })
+})
+
+afterEach(() => {
+  sessionStore.clear()
+})
+
+/** The assignee fact, scoped so the members `<select>` cannot satisfy the query by accident. */
+function factsAssignee(): HTMLElement {
+  const facts = document.querySelector('.facts') as HTMLElement
+  const term = within(facts).getByText('Assignee')
+  return term.parentElement?.querySelector('dd') as HTMLElement
+}
+
+/** A response the test controls the timing of, so the provisional state is observable. */
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
 
 interface Scenario {
   /** What the item looks like on the first read. */
@@ -240,5 +275,112 @@ describe('api.item', () => {
 
     expect(response.etag).toBe('"2"')
     expect(response.data.created_by.display_name).toBe('Lena Lead')
+  })
+})
+
+describe('ItemDetailPage — optimistic claim', () => {
+  /**
+   * The item, its discussion and its history, with the claim held open until the test says
+   * so. Everything else is stubbed the way the real API answers.
+   */
+  function gatedScenario() {
+    const gate = deferred<Response>()
+    let current = detail({ available_transitions: ['in_progress'] })
+    let serverItem = current
+
+    const calls = installFetch(async (request) => {
+      if (request.path === ITEM_PATH && request.method === 'GET') {
+        return jsonResponse(current, { headers: { ETag: `"${current.version}"` } })
+      }
+      if (request.path === `${ITEM_PATH}/claim` && request.method === 'POST') {
+        return await gate.promise
+      }
+      if (request.path === `${ITEM_PATH}/comments` && request.method === 'GET') {
+        return jsonResponse(page([]))
+      }
+      if (request.path === `${ITEM_PATH}/activity` && request.method === 'GET') {
+        return jsonResponse(page([]))
+      }
+      if (request.path === `/api/v1/teams/${PLATFORM_TEAM_ID}/members`) {
+        return jsonResponse([
+          { user_id: NINA.id, email: NINA.email, display_name: NINA.display_name, role: 'member' },
+        ])
+      }
+      return errorResponse(404, 'not_found', `No stub for ${request.method} ${request.path}`)
+    })
+
+    return {
+      calls,
+      gate,
+      /** What the next read of the item will return. */
+      setServerItem: (next: typeof serverItem) => {
+        serverItem = next
+        current = next
+      },
+      claimedItem: () => {
+        serverItem = detail({ assignee: NINA, version: 2, available_transitions: ['in_progress'] })
+        current = serverItem
+        return jsonResponse(serverItem, { headers: { ETag: '"2"' } })
+      },
+    }
+  }
+
+  it('shows the claim before the server answers, then adopts the confirmed state', async () => {
+    const harness = gatedScenario()
+    renderWithClient(<ItemDetailPage team={membership()} itemId={ITEM_ID} />)
+
+    await userEvent.setup().click(await screen.findByRole('button', { name: /claim this item/i }))
+
+    // The optimistic half: the row is Nina's while the request is still in flight, and the
+    // page says that is what it is doing rather than presenting it as settled.
+    expect(await screen.findByText(/until the server confirms/i)).toBeInTheDocument()
+    expect(factsAssignee()).toHaveTextContent('Nina Member')
+    // Nothing claims to be confirmed yet.
+    expect(screen.queryByText(/server confirmed the claim/i)).not.toBeInTheDocument()
+
+    harness.gate.resolve(harness.claimedItem())
+
+    expect(await screen.findByText(/server confirmed the claim/i)).toBeInTheDocument()
+    expect(factsAssignee()).toHaveTextContent('Nina Member')
+  })
+
+  it('rolls back a lost race and shows the person who actually won', async () => {
+    const harness = gatedScenario()
+    renderWithClient(<ItemDetailPage team={membership()} itemId={ITEM_ID} />)
+
+    await userEvent.setup().click(await screen.findByRole('button', { name: /claim this item/i }))
+    expect(await screen.findByText(/until the server confirms/i)).toBeInTheDocument()
+    expect(factsAssignee()).toHaveTextContent('Nina Member')
+
+    // Somebody else got there first. The next read is the server's truth: it is Lena's.
+    harness.setServerItem(detail({ assignee: LENA, version: 2, available_transitions: [] }))
+    harness.gate.resolve(
+      errorResponse(409, 'item_already_claimed', 'This item has already been claimed.'),
+    )
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/somebody claimed this item first/i)
+
+    // The optimistic owner is gone, and the page shows the winner rather than the guess.
+    await waitFor(() => expect(factsAssignee()).toHaveTextContent('Lena Lead'))
+    expect(screen.queryByText(/until the server confirms/i)).not.toBeInTheDocument()
+  })
+
+  it('uses the ETag the claim returned for the next conditional write', async () => {
+    // Regression: the claim bumps the version, so reusing the page's pre-claim ETag made
+    // the very next transition fail as stale. The claim response is the new version.
+    const harness = scenario({ initial: { available_transitions: ['in_progress'], version: 1 } })
+    const user = userEvent.setup()
+
+    renderWithClient(<ItemDetailPage team={membership()} itemId={ITEM_ID} />)
+    await user.click(await screen.findByRole('button', { name: /claim this item/i }))
+    await screen.findByText(/server confirmed the claim/i)
+
+    await user.click(await screen.findByRole('button', { name: /start work/i }))
+
+    await waitFor(() => {
+      const write = harness.calls.find((call) => call.path === `${ITEM_PATH}/transitions`)
+      expect(write?.headers['if-match']).toBe('"2"')
+    })
   })
 })

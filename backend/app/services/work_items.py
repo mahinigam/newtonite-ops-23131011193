@@ -43,12 +43,19 @@ from app.errors import (
     StaleVersion,
 )
 from app.models import Membership, User, WorkItem
-from app.models.enums import ActivityType, Operation, Priority, Status, WorkItemType
+from app.models.enums import (
+    ActivityType,
+    Operation,
+    OutboxEventType,
+    Priority,
+    Status,
+    WorkItemType,
+)
 from app.policy.principal import Principal, require_item_access
 from app.policy.roles import Permission, require_permission
 from app.policy.workflow import available_transitions, rule_for
 from app.schemas.work_items import CreateWorkItemRequest, UpdateWorkItemRequest
-from app.services import activity, idempotency
+from app.services import activity, idempotency, outbox
 from app.services.cursors import Cursor
 from app.services.pagination import DEFAULT_PAGE_SIZE, descending_keyset
 
@@ -146,6 +153,89 @@ async def list_items(session: AsyncSession, **kwargs: Any) -> tuple[list[Any], b
     return rows[:limit], has_more
 
 
+def _apply_filters(
+    statement: Any,
+    *,
+    statuses: tuple[Status, ...],
+    priorities: tuple[Priority, ...],
+    types: tuple[WorkItemType, ...],
+    search: str | None,
+) -> Any:
+    """Apply the filters both list queries share.
+
+    Extracted so the team list and the cross-team "assigned to me" list cannot drift into
+    slightly different meanings of the same query parameter — the kind of difference that
+    shows up as "the filter works on one page but not the other".
+    """
+    if statuses:
+        statement = statement.where(WorkItem.status.in_([status.value for status in statuses]))
+    if priorities:
+        statement = statement.where(
+            WorkItem.priority.in_([priority.value for priority in priorities])
+        )
+    if types:
+        statement = statement.where(WorkItem.type.in_([item_type.value for item_type in types]))
+    if search:
+        # `websearch_to_tsquery` accepts what a person actually types (quotes, `or`,
+        # a leading `-`) and never raises on malformed input, unlike `to_tsquery`.
+        statement = statement.where(
+            WorkItem.search_vector.op("@@")(func.websearch_to_tsquery(SEARCH_CONFIG, search))
+        )
+    return statement
+
+
+def _apply_page(statement: Any, *, cursor: Cursor | None, limit: int) -> Any:
+    """Order newest-first and take one extra row, so "is there more?" needs no count."""
+    if cursor is not None:
+        statement = statement.where(descending_keyset(WorkItem.created_at, WorkItem.id, cursor))
+    return statement.order_by(WorkItem.created_at.desc(), WorkItem.id.desc()).limit(limit + 1)
+
+
+async def list_my_items(
+    session: AsyncSession,
+    *,
+    principal: Principal,
+    statuses: tuple[Status, ...] = (),
+    priorities: tuple[Priority, ...] = (),
+    types: tuple[WorkItemType, ...] = (),
+    search: str | None = None,
+    cursor: Cursor | None = None,
+    limit: int = DEFAULT_PAGE_SIZE,
+) -> tuple[list[Any], bool]:
+    """One page of the caller's work, across every team they belong to.
+
+    The team scope is `principal.team_ids`: the memberships loaded from the database for
+    this request. Nothing in the query comes from the client except the filters and the
+    cursor, so there is no team id to forge.
+
+    A caller with no memberships gets an empty page rather than a query with
+    `team_id IN ()` — an empty `IN` is always false, but skipping the round trip keeps
+    the no-teams case obviously correct.
+    """
+    team_ids = principal.team_ids
+    if not team_ids:
+        return [], False
+
+    rows = list(
+        (
+            await session.execute(
+                my_items_statement(
+                    viewer_id=principal.user.id,
+                    team_ids=team_ids,
+                    statuses=statuses,
+                    priorities=priorities,
+                    types=types,
+                    search=search,
+                    cursor=cursor,
+                    limit=limit,
+                )
+            )
+        ).all()
+    )
+    has_more = len(rows) > limit
+    return rows[:limit], has_more
+
+
 def list_statement(
     *,
     team_id: uuid.UUID,
@@ -160,7 +250,7 @@ def list_statement(
     cursor: Cursor | None = None,
     limit: int = DEFAULT_PAGE_SIZE,
 ) -> Any:
-    """Build the list query. Pure, so it can be compiled and measured on its own.
+    """Build the team list query. Pure, so it can be compiled and measured on its own.
 
     Annotated `Any` for the same reason as the other query builders in this module:
     SQLAlchemy's `Select` is generic over its row shape, and the row shape here is a
@@ -168,14 +258,6 @@ def list_statement(
     """
     statement = ITEM_QUERY.where(WorkItem.team_id == team_id)
 
-    if statuses:
-        statement = statement.where(WorkItem.status.in_([status.value for status in statuses]))
-    if priorities:
-        statement = statement.where(
-            WorkItem.priority.in_([priority.value for priority in priorities])
-        )
-    if types:
-        statement = statement.where(WorkItem.type.in_([item_type.value for item_type in types]))
     if unassigned:
         statement = statement.where(WorkItem.assignee_id.is_(None))
     elif only_mine:
@@ -183,17 +265,47 @@ def list_statement(
     elif assignee_id is not None:
         statement = statement.where(WorkItem.assignee_id == assignee_id)
 
-    if search:
-        # `websearch_to_tsquery` accepts what a person actually types (quotes, `or`,
-        # a leading `-`) and never raises on malformed input, unlike `to_tsquery`.
-        statement = statement.where(
-            WorkItem.search_vector.op("@@")(func.websearch_to_tsquery(SEARCH_CONFIG, search))
-        )
+    return _apply_page(
+        _apply_filters(
+            statement, statuses=statuses, priorities=priorities, types=types, search=search
+        ),
+        cursor=cursor,
+        limit=limit,
+    )
 
-    if cursor is not None:
-        statement = statement.where(descending_keyset(WorkItem.created_at, WorkItem.id, cursor))
 
-    return statement.order_by(WorkItem.created_at.desc(), WorkItem.id.desc()).limit(limit + 1)
+def my_items_statement(
+    *,
+    viewer_id: uuid.UUID,
+    team_ids: tuple[uuid.UUID, ...],
+    statuses: tuple[Status, ...] = (),
+    priorities: tuple[Priority, ...] = (),
+    types: tuple[WorkItemType, ...] = (),
+    search: str | None = None,
+    cursor: Cursor | None = None,
+    limit: int = DEFAULT_PAGE_SIZE,
+) -> Any:
+    """Build the cross-team "assigned to me" query. Pure, so it can be measured alone.
+
+    Two conditions define it, and neither comes from the request: the assignee is the
+    caller, and the team is one the caller belongs to. The team list is not a filter the
+    client supplies — it is the caller's own membership set, loaded from the database on
+    this request. A request cannot widen it.
+
+    This is the query `ix_work_items_assignee_created` was added for: the assignee index
+    finds the rows, and the team ids restrict them to teams the caller can see.
+    """
+    statement = ITEM_QUERY.where(
+        WorkItem.assignee_id == viewer_id,
+        WorkItem.team_id.in_(list(team_ids)),
+    )
+    return _apply_page(
+        _apply_filters(
+            statement, statuses=statuses, priorities=priorities, types=types, search=search
+        ),
+        cursor=cursor,
+        limit=limit,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -289,6 +401,15 @@ async def create_item(
             to_value=str(assignee_id),
             meta=await _assignee_meta(session, assignee_id),
         )
+        await _queue_assignee_event(
+            session,
+            event_type=OutboxEventType.WORK_ITEM_ASSIGNED,
+            item_id=item_id,
+            team_id=team_id,
+            recipient_id=assignee_id,
+            actor=principal,
+            title=request.title,
+        )
 
     await idempotency.complete_key(
         session,
@@ -331,6 +452,46 @@ async def _assignee_meta(session: AsyncSession, user_id: uuid.UUID) -> dict[str,
         await session.execute(select(User.display_name).where(User.id == user_id))
     ).scalar_one_or_none()
     return {"assignee_id": str(user_id), "assignee_name": name}
+
+
+async def _queue_assignee_event(
+    session: AsyncSession,
+    *,
+    event_type: OutboxEventType,
+    item_id: uuid.UUID,
+    team_id: uuid.UUID,
+    recipient_id: uuid.UUID | None,
+    actor: Principal,
+    title: str,
+) -> None:
+    """Queue a notification for the item's assignee. Does not commit.
+
+    Called inside the mutation's transaction, so the event commits with the change or not
+    at all — the outbox row can never survive a rolled-back assignment, and an assignment
+    can never commit without its notification being queued.
+
+    Two cases produce nothing, deliberately:
+
+    * there is no assignee, so there is nobody to tell;
+    * the actor is the assignee. Telling somebody about their own action is noise, and a
+      notification about "you assigned yourself" is the kind of thing that teaches people
+      to ignore the badge.
+    """
+    if recipient_id is None or recipient_id == actor.user.id:
+        return
+
+    await outbox.enqueue(
+        session,
+        event_type=event_type,
+        team_id=team_id,
+        aggregate_id=item_id,
+        payload={
+            "recipient_id": str(recipient_id),
+            "actor_id": str(actor.user.id),
+            "actor_name": actor.user.display_name,
+            "work_item_title": title,
+        },
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -464,6 +625,9 @@ async def update_item(
     provided = request.model_fields_set
     changes: list[tuple[ActivityType, str | None, str | None, dict[str, Any]]] = []
     values: dict[str, Any] = {}
+    #: Set when this edit gives the item to somebody new, so a notification is queued
+    #: after the history rows and before the commit.
+    notified_assignee: uuid.UUID | None = None
 
     for field, (event, is_enum) in _FIELD_EVENTS.items():
         if field not in provided:
@@ -485,6 +649,7 @@ async def update_item(
             if new_assignee is not None:
                 await _ensure_assignable(session, team_id=row.team_id, user_id=new_assignee)
             values["assignee_id"] = new_assignee
+            notified_assignee = new_assignee
             if new_assignee is None:
                 changes.append((ActivityType.UNASSIGNED, _render(row.assignee_name), None, {}))
             elif row.assignee_id is None:
@@ -542,6 +707,18 @@ async def update_item(
             to_value=after,
             meta=meta,
         )
+
+    if notified_assignee is not None:
+        await _queue_assignee_event(
+            session,
+            event_type=OutboxEventType.WORK_ITEM_ASSIGNED,
+            item_id=item_id,
+            team_id=row.team_id,
+            recipient_id=notified_assignee,
+            actor=principal,
+            title=values.get("title", row.title),
+        )
+
     await session.commit()
 
     fresh = await get_item(session, item_id)
@@ -679,6 +856,30 @@ async def transition_item(
         to_value=target.value,
         meta=({"note": note} if note else {}),
     )
+
+    # Approval and rejection are the two transitions whose outcome the person doing the
+    # work needs to hear about. Every other move is visible in the item and the feed.
+    if rule.event is ActivityType.APPROVED:
+        await _queue_assignee_event(
+            session,
+            event_type=OutboxEventType.WORK_ITEM_APPROVED,
+            item_id=item_id,
+            team_id=row.team_id,
+            recipient_id=row.assignee_id,
+            actor=principal,
+            title=row.title,
+        )
+    elif rule.event is ActivityType.REJECTED:
+        await _queue_assignee_event(
+            session,
+            event_type=OutboxEventType.WORK_ITEM_REJECTED,
+            item_id=item_id,
+            team_id=row.team_id,
+            recipient_id=row.assignee_id,
+            actor=principal,
+            title=row.title,
+        )
+
     await session.commit()
 
     result = await get_item(session, item_id)
@@ -692,8 +893,10 @@ __all__ = [
     "create_item",
     "get_item",
     "list_items",
+    "list_my_items",
     "list_statement",
     "load_visible_item",
+    "my_items_statement",
     "transition_item",
     "update_item",
 ]

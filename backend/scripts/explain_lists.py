@@ -29,7 +29,7 @@ from app.models.enums import Priority, Status
 from app.services.activity import item_activity_statement, team_activity_statement
 from app.services.comments import comment_list_statement
 from app.services.cursors import Cursor
-from app.services.work_items import list_statement
+from app.services.work_items import list_statement, my_items_statement
 from sqlalchemy import text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.engine.interfaces import Dialect
@@ -75,6 +75,19 @@ async def resolve_seed_ids(session: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]
         )
     ).scalar_one()
     return team_id, viewer_id
+
+
+async def viewer_team_ids(session: AsyncSession, viewer_id: uuid.UUID) -> tuple[uuid.UUID, ...]:
+    """Every team the measured viewer belongs to.
+
+    `/me/items` scopes itself to the caller's memberships, so measuring it with one team
+    would measure a shape the endpoint never issues for a multi-team account.
+    """
+    rows = await session.execute(
+        text("SELECT team_id FROM memberships WHERE user_id = :viewer"),
+        {"viewer": viewer_id},
+    )
+    return tuple(row[0] for row in rows)
 
 
 async def deep_item_cursor(session: AsyncSession, team_id: uuid.UUID) -> Cursor:
@@ -164,6 +177,7 @@ async def main() -> None:
             team_id, viewer_id = await resolve_seed_ids(session)
             event_item = await busiest_item(session, table="activity_events")
             comment_item = await busiest_item(session, table="comments")
+            viewer_teams = await viewer_team_ids(session, viewer_id)
 
             # Built eagerly, one statement per measured shape, so the SQL under each
             # heading is visible in this file rather than assembled from a filter dict.
@@ -215,6 +229,13 @@ async def main() -> None:
                 (
                     "dashboard: assigned to me",
                     list_statement(team_id=team_id, viewer_id=viewer_id, limit=25, only_mine=True),
+                ),
+                (
+                    # The `/me/items` shape: the assignee index, restricted to the caller's
+                    # own teams. Unlike the team-scoped dashboard row above, there is no
+                    # `team_id` predicate to intersect with, so this is a single index scan.
+                    "cross-team: my work (/me/items)",
+                    my_items_statement(viewer_id=viewer_id, team_ids=viewer_teams, limit=25),
                 ),
                 (
                     "search: full text",

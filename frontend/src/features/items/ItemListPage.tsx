@@ -21,7 +21,14 @@ import { navigate } from '../../lib/router'
 import { useDebouncedValue } from '../../lib/useDebouncedValue'
 import { keys } from '../../query/client'
 import { CreateItemForm } from './CreateItemForm'
-import { EMPTY_FILTERS, ItemFiltersBar, filterKey, isFiltered } from './ItemFilters'
+import {
+  EMPTY_FILTERS,
+  ItemFiltersBar,
+  PresetBar,
+  TEAM_PRESETS,
+  filterKey,
+  isFiltered,
+} from './ItemFilters'
 import { ItemList } from './ItemList'
 
 const PAGE_SIZE = 25
@@ -47,6 +54,7 @@ export function ItemListPage({ team }: { team: Membership }) {
 
   const items = query.data?.pages.flatMap((page) => page.items) ?? []
   const loadedCount = query.data ? items.length : null
+  const teams = useMemo(() => new Map([[team.team_id, team]]), [team])
 
   return (
     <section className="page">
@@ -65,6 +73,8 @@ export function ItemListPage({ team }: { team: Membership }) {
           }}
         />
       </header>
+
+      <PresetBar presets={TEAM_PRESETS} filters={filters} onSelect={setFilters} />
 
       <ItemFiltersBar
         filters={filters}
@@ -93,7 +103,7 @@ export function ItemListPage({ team }: { team: Membership }) {
 
       {items.length > 0 ? (
         <>
-          <ItemList items={items} teamKey={team.team_key} />
+          <ItemList items={items} teams={teams} />
           <div className="list-footer">
             {query.hasNextPage ? (
               <button

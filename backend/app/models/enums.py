@@ -68,6 +68,32 @@ class IdempotencyStatus(StrEnum):
     COMPLETED = "completed"
 
 
+class OutboxEventType(StrEnum):
+    """The operational moments that produce a notification.
+
+    Deliberately small. Each one names a moment a person needs to know about, and each
+    has exactly one obvious recipient (the item's assignee). Events with no recipient —
+    a claim, a comment — are already served by the activity history, so they do not
+    produce a notification and never enter the outbox.
+    """
+
+    WORK_ITEM_ASSIGNED = "work_item_assigned"
+    WORK_ITEM_APPROVED = "work_item_approved"
+    WORK_ITEM_REJECTED = "work_item_rejected"
+
+
+class OutboxStatus(StrEnum):
+    """A queued event's delivery state.
+
+    `failed` is terminal and reached only after the attempt limit, so a row in that state
+    is a real, visible operational problem rather than one still being retried.
+    """
+
+    PENDING = "pending"
+    DELIVERED = "delivered"
+    FAILED = "failed"
+
+
 class Operation(StrEnum):
     """The logical operation a retryable request belongs to.
 

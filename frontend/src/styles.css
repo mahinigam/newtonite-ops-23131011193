@@ -784,3 +784,134 @@ textarea[aria-invalid='true'] {
     justify-items: start;
   }
 }
+
+/* --------------------------------------------------------------- presets --- */
+
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.presets__button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.presets__button:hover {
+  background: var(--surface-2);
+}
+
+.presets__button--active {
+  background: var(--text);
+  border-color: var(--text);
+  color: var(--surface);
+}
+
+.app__nav-divider {
+  width: 1px;
+  background: var(--border);
+  margin: 2px 0;
+}
+
+.nav__count {
+  display: inline-block;
+  min-width: 18px;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.item-row__team {
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.item-row--unlinked .item-row__link {
+  cursor: default;
+  opacity: 0.7;
+}
+
+/* --------------------------------------------------------- notifications --- */
+
+.notification-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.notification {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.notification--unread {
+  border-left: 3px solid var(--info);
+  background: var(--surface);
+}
+
+.notification__main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  flex: 1 1 320px;
+}
+
+.notification__kind {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.notification__body {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.notification__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.notification__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--info);
+}
+
+.notification__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}

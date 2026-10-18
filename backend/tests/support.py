@@ -17,6 +17,8 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 # Child tables first. CASCADE makes the order non-critical, but being explicit
 # documents the relationships. RESTART IDENTITY keeps sequences deterministic.
 ALL_TABLES = (
+    "notifications",
+    "outbox_events",
     "activity_events",
     "comments",
     "work_items",
