@@ -12,6 +12,7 @@
 
 import type {
   ActivityEvent,
+  ActivityFilters,
   Comment,
   ItemFilters,
   LoginResponse,
@@ -409,10 +410,17 @@ export const api = {
     teamId: string,
     cursor: string | null,
     limit: number,
+    filters: ActivityFilters = {},
     signal?: AbortSignal,
   ): Promise<Page<ActivityEvent>> {
     const { data } = await request<Page<ActivityEvent>>(`/api/v1/teams/${teamId}/activity`, {
-      params: { cursor, limit },
+      params: {
+        cursor,
+        limit,
+        since: filters.since,
+        until: filters.until,
+        actor: filters.actor,
+      },
       signal,
     })
     return data

@@ -63,11 +63,35 @@ const ACTIVITY_LABELS: Record<ActivityType, string> = {
   commented: 'commented',
 }
 
+/**
+ * The same events phrased to be followed by an item title.
+ *
+ * A team feed names the item on every row, so "created this item" would be both wrong and
+ * unhelpful. The verbs carry their own preposition where one is needed ("changed the status
+ * of"), so the sentence reads correctly before the linked title rather than after it.
+ */
+const ACTIVITY_ACTIONS: Record<ActivityType, string> = {
+  created: 'created',
+  claimed: 'claimed',
+  assigned: 'assigned',
+  unassigned: 'unassigned',
+  status_changed: 'changed the status of',
+  approved: 'approved',
+  rejected: 'sent back',
+  priority_changed: 'changed the priority of',
+  due_date_changed: 'changed the due date of',
+  type_changed: 'changed the type of',
+  title_changed: 'changed the title of',
+  description_changed: 'changed the description of',
+  commented: 'commented on',
+}
+
 export const statusLabel = (status: Status): string => STATUS_LABELS[status]
 export const priorityLabel = (priority: Priority): string => PRIORITY_LABELS[priority]
 export const typeLabel = (type: WorkItemType): string => TYPE_LABELS[type]
 export const roleLabel = (role: Role): string => ROLE_LABELS[role]
 export const activityLabel = (type: ActivityType): string => ACTIVITY_LABELS[type]
+export const activityAction = (type: ActivityType): string => ACTIVITY_ACTIONS[type]
 
 export const PRIORITIES: Priority[] = ['low', 'medium', 'high', 'urgent']
 export const TYPES: WorkItemType[] = ['incident', 'customer_issue', 'payment', 'compliance', 'task']
@@ -139,4 +163,26 @@ export function fromLocalInputValue(value: string): string | null {
   if (!value) return null
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? null : date.toISOString()
+}
+
+/** Local midnight at the start of a `YYYY-MM-DD` value, as an ISO instant. */
+export function startOfLocalDay(value: string): string | null {
+  if (!value) return null
+  const date = new Date(`${value}T00:00:00`)
+  return Number.isNaN(date.getTime()) ? null : date.toISOString()
+}
+
+/**
+ * The last millisecond of a local day.
+ *
+ * The API's `until` is an inclusive instant, so a date picker's "To 17 Oct" has to mean
+ * "through the end of the 17th" — not "up to midnight", which would silently drop a day's
+ * events. Computed in local time because that is the day the person selecting it means.
+ */
+export function endOfLocalDay(value: string): string | null {
+  const start = startOfLocalDay(value)
+  if (!start) return null
+  const next = new Date(start)
+  next.setDate(next.getDate() + 1)
+  return new Date(next.getTime() - 1).toISOString()
 }

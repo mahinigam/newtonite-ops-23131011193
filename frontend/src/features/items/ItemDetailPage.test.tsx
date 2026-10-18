@@ -20,6 +20,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { api } from '../../api/client'
+import type { ActivityEvent } from '../../api/types'
 import { sessionStore } from '../../auth/session'
 import { errorResponse, installFetch, jsonResponse, type RecordedRequest } from '../../test/fetch'
 import {
@@ -28,6 +29,7 @@ import {
   NINA,
   PLATFORM_TEAM_ID,
   detail,
+  event,
   membership,
   page,
 } from '../../test/fixtures'
@@ -71,13 +73,15 @@ function deferred<T>() {
 interface Scenario {
   /** What the item looks like on the first read. */
   initial?: Parameters<typeof detail>[0]
+  /** The item's timeline. */
+  activity?: ActivityEvent[]
   /** Overrides the response to a claim. */
   onClaim?: (request: RecordedRequest) => Response
   /** Overrides the response to a transition. */
   onTransition?: (request: RecordedRequest) => Response
 }
 
-function scenario({ initial, onClaim, onTransition }: Scenario = {}) {
+function scenario({ initial, activity, onClaim, onTransition }: Scenario = {}) {
   let current = detail(initial)
   let reads = 0
 
@@ -101,7 +105,7 @@ function scenario({ initial, onClaim, onTransition }: Scenario = {}) {
       return jsonResponse(page([]))
     }
     if (request.path === `${ITEM_PATH}/activity` && request.method === 'GET') {
-      return jsonResponse(page([]))
+      return jsonResponse(page(activity ?? []))
     }
     if (request.path === `/api/v1/teams/${PLATFORM_TEAM_ID}/members`) {
       return jsonResponse([
@@ -382,5 +386,29 @@ describe('ItemDetailPage — optimistic claim', () => {
       const write = harness.calls.find((call) => call.path === `${ITEM_PATH}/transitions`)
       expect(write?.headers['if-match']).toBe('"2"')
     })
+  })
+
+  it("words the timeline for the item it is on, without repeating the item's name", async () => {
+    scenario({
+      activity: [
+        event({ id: 2, event_type: 'claimed', from_value: null, to_value: NINA.id }),
+        event({
+          id: 1,
+          event_type: 'created',
+          from_value: null,
+          to_value: null,
+          work_item_title: null,
+        }),
+      ],
+    })
+
+    renderWithClient(<ItemDetailPage team={membership()} itemId={ITEM_ID} />)
+
+    await waitFor(() => expect(document.querySelector('.activity__list')).not.toBeNull())
+    const list = document.querySelector('.activity__list') as HTMLElement
+    expect(within(list).getByText('claimed this item')).toBeInTheDocument()
+    expect(within(list).getByText('created this item')).toBeInTheDocument()
+    // The page already says which item this is, so no row needs to link back to it.
+    expect(within(list).queryByRole('link')).not.toBeInTheDocument()
   })
 })

@@ -15,6 +15,7 @@ it cannot be written without them). This file is about *reading* it:
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from app.models.enums import Role
 from httpx import AsyncClient
@@ -350,3 +351,168 @@ async def test_reading_activity_requires_authentication(
 
     assert response.status_code == 401
     assert response.headers["www-authenticate"] == "Bearer"
+
+
+async def test_the_team_feed_names_the_item_but_the_timeline_does_not(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """A feed spanning many items has to say *which* item.
+
+    "Lena Fischer assigned this item" is unambiguous on that item's page and useless in a
+    team feed. The title is joined for the feed; the item timeline keeps its shape and does
+    not pay for a join it does not need.
+    """
+    team, users = await scenario(db, roles={"member": Role.MEMBER}, team_key="alpha")
+    token = await login(client, users["member"].email)
+    item = await create_item_via_api(
+        client, token=token, team_id=team.id, title="Refund the duplicate charge"
+    )
+
+    feed = await read_team_activity(client, token=token, team_id=team.id)
+    timeline = await read_item_activity(client, token=token, item_id=item["id"])
+
+    assert feed.status_code == 200, feed.text
+    assert feed.json()["items"][0]["work_item_title"] == "Refund the duplicate charge"
+    assert timeline.status_code == 200, timeline.text
+    assert timeline.json()["items"][0]["work_item_title"] is None
+
+
+async def test_the_feed_shows_the_current_title_not_a_snapshot(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """Names are joined live, because a stale title makes the feed harder to use.
+
+    Notifications snapshot their body — they are a message that was sent. History is a
+    view of the item as it is now, so a rename must show through it.
+    """
+    team, users = await scenario(db, roles={"member": Role.MEMBER}, team_key="alpha")
+    token = await login(client, users["member"].email)
+    item = await create_item_via_api(client, token=token, team_id=team.id, title="Before")
+    current = await read_item(client, token=token, item_id=item["id"])
+    renamed = await api_patch(
+        client, token=token, item_id=item["id"], etag=current.headers["etag"], title="After"
+    )
+    assert renamed.status_code == 200, renamed.text
+
+    feed = await read_team_activity(client, token=token, team_id=team.id)
+
+    created = [event for event in feed.json()["items"] if event["event_type"] == "created"]
+    assert [event["work_item_title"] for event in created] == ["After"]
+
+
+async def test_the_feed_can_be_bounded_by_an_inclusive_date_range(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """Both bounds include the row that sits exactly on them.
+
+    A "From 17 Oct" control that silently dropped the 17th at 00:00 would be wrong, and a
+    "To 18 Oct" control that excluded the 18th would be worse. The boundary is asserted
+    from the stored timestamp, not from a rounded one.
+    """
+    team, users = await scenario(db, roles={"member": Role.MEMBER}, team_key="alpha")
+    token = await login(client, users["member"].email)
+    item = await create_item_via_api(client, token=token, team_id=team.id, title="Bounded")
+    await insert_events(
+        db,
+        item_id=uuid.UUID(item["id"]),
+        team_id=team.id,
+        actor_id=users["member"].id,
+        count=5,
+        spaced=True,
+    )
+    everything = await read_team_activity(client, token=token, team_id=team.id)
+    assert everything.status_code == 200, everything.text
+    steps = [
+        event for event in everything.json()["items"] if event["event_type"] == "priority_changed"
+    ]
+    assert len(steps) == 5
+    middle = sorted(steps, key=lambda event: event["created_at"])[2]
+    boundary = middle["created_at"]
+
+    since_page = await read_team_activity(
+        client, token=token, team_id=team.id, since=boundary, limit=100
+    )
+    until_page = await read_team_activity(
+        client, token=token, team_id=team.id, until=boundary, limit=100
+    )
+
+    assert since_page.status_code == 200, since_page.text
+    assert until_page.status_code == 200, until_page.text
+    since_ids = {event["id"] for event in since_page.json()["items"]}
+    until_ids = {event["id"] for event in until_page.json()["items"]}
+    # The row on the boundary belongs to both windows: inclusive at each end.
+    assert middle["id"] in since_ids and middle["id"] in until_ids
+    # And the inserted steps split cleanly around it: 3 on the older side, 3 newer.
+    inserted = {event["id"] for event in steps}
+    assert len(until_ids & inserted) == 3
+    assert len(since_ids & inserted) == 3
+    # The windows meet exactly on the boundary row, and between them cover the whole feed.
+    assert since_ids & until_ids == {middle["id"]}
+    assert since_ids | until_ids == {event["id"] for event in everything.json()["items"]}
+
+    # Paging a range walks that range and stops at its edge.
+    ranged = await walk_pages(
+        lambda **kw: read_team_activity(client, token=token, team_id=team.id, since=boundary, **kw),
+        limit=2,
+    )
+    assert {row["id"] for row in ranged} == since_ids
+
+
+async def test_a_narrowing_filter_can_only_remove_rows(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """`actor` narrows an already team-scoped set; it never widens it.
+
+    A member of another team, or an id that does not exist, produces an empty page — not a
+    window into somebody else's history.
+    """
+    team, users = await scenario(
+        db, roles={"member": Role.MEMBER, "other": Role.MEMBER}, team_key="alpha"
+    )
+    token = await login(client, users["member"].email)
+    other_token = await login(client, users["other"].email)
+    mine = await create_item_via_api(client, token=token, team_id=team.id, title="Mine")
+    theirs = await create_item_via_api(client, token=other_token, team_id=team.id, title="Theirs")
+
+    as_me = await read_team_activity(client, token=token, team_id=team.id, actor="me")
+    as_other = await read_team_activity(
+        client, token=token, team_id=team.id, actor=str(users["other"].id)
+    )
+    as_nobody = await read_team_activity(
+        client, token=token, team_id=team.id, actor=str(uuid.uuid4())
+    )
+
+    assert as_me.status_code == as_other.status_code == as_nobody.status_code == 200
+    assert {event["work_item_id"] for event in as_me.json()["items"]} == {mine["id"]}
+    assert {event["work_item_id"] for event in as_other.json()["items"]} == {theirs["id"]}
+    assert as_nobody.json()["items"] == []
+    assert as_nobody.json()["has_more"] is False
+
+
+async def test_a_bad_date_range_or_actor_is_a_validation_error(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    team, users = await scenario(db, roles={"member": Role.MEMBER}, team_key="alpha")
+    token = await login(client, users["member"].email)
+    now = datetime.now(UTC)
+
+    inverted = await read_team_activity(
+        client,
+        token=token,
+        team_id=team.id,
+        since=now.isoformat(),
+        until=(now - timedelta(hours=1)).isoformat(),
+    )
+    naive = await read_team_activity(
+        client, token=token, team_id=team.id, since="2026-10-17T00:00:00"
+    )
+    garbage = await read_team_activity(
+        client, token=token, team_id=team.id, since="the day before yesterday"
+    )
+    bad_actor = await read_team_activity(client, token=token, team_id=team.id, actor="someone")
+
+    for response in (inverted, naive, garbage, bad_actor):
+        assert response.status_code == 422, response.text
+        assert response.json()["error"]["code"] == "validation_failed"
+    assert "since" in naive.json()["error"]["message"]
+    assert "offset" in naive.json()["error"]["message"]

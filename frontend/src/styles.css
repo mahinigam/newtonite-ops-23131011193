@@ -747,14 +747,69 @@ textarea[aria-invalid='true'] {
   padding-left: 12px;
 }
 
-.activity__item--status_changed,
-.activity__item--approved,
+/* The rail says what kind of event a row is, and the row's own label says the same thing
+   in words. Colour is never the only signal; the legend above the list spells it out. */
+.activity__item--approved {
+  border-left-color: var(--ok);
+}
+
 .activity__item--rejected {
+  border-left-color: var(--warn);
+}
+
+.activity__item--status_changed {
   border-left-color: var(--info);
 }
 
-.activity__item--commented {
-  border-left-color: var(--ok);
+.activity__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.activity__legend li {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.activity__swatch {
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.activity__swatch--ok {
+  background: var(--ok);
+}
+
+.activity__swatch--warn {
+  background: var(--warn);
+}
+
+.activity__swatch--info {
+  background: var(--info);
+}
+
+.activity__item-link {
+  color: inherit;
+  font-weight: 600;
+  text-decoration-color: var(--border);
+  overflow-wrap: anywhere;
+}
+
+.activity-range {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 16px;
 }
 
 .activity__head {

@@ -74,7 +74,10 @@ export const keys = {
   item: (itemId: string) => ['items', itemId] as const,
   comments: (itemId: string) => ['items', itemId, 'comments'] as const,
   itemActivity: (itemId: string) => ['items', itemId, 'activity'] as const,
-  teamActivity: (teamId: string) => ['teams', teamId, 'activity'] as const,
+  teamActivity: (teamId: string, filters?: unknown) =>
+    filters === undefined
+      ? (['teams', teamId, 'activity'] as const)
+      : (['teams', teamId, 'activity', filters] as const),
   notifications: () => ['notifications'] as const,
   notificationsUnread: () => ['notifications', 'unread'] as const,
 }

@@ -327,12 +327,21 @@ async def read_team_activity(
     team_id: uuid.UUID,
     cursor: str | None = None,
     limit: int | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    actor: str | None = None,
 ) -> Response:
     params: dict[str, Any] = {}
     if cursor is not None:
         params["cursor"] = cursor
     if limit is not None:
         params["limit"] = limit
+    if since is not None:
+        params["since"] = since
+    if until is not None:
+        params["until"] = until
+    if actor is not None:
+        params["actor"] = actor
     return await client.get(
         TEAM_ACTIVITY_URL.format(team_id=team_id), params=params, headers=auth_headers(token)
     )

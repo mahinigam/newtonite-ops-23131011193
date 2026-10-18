@@ -28,6 +28,7 @@ is not a page of items and should not share a position with one.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from typing import Any
 
@@ -117,14 +118,34 @@ def team_activity_statement(
     team_id: uuid.UUID,
     cursor: Cursor | None = None,
     limit: int = DEFAULT_PAGE_SIZE,
+    since: dt.datetime | None = None,
+    until: dt.datetime | None = None,
+    actor_id: uuid.UUID | None = None,
 ) -> Any:
     """A team's recent activity, newest first.
 
     Scoped by the denormalised `team_id` on the event, so the feed needs no join back to
-    `work_items` — and, more importantly, so a team feed can never be built from a query
-    that forgot the team filter.
+    `work_items` to *authorize* — and, more importantly, so a team feed can never be built
+    from a query that forgot the team filter. The join that is here exists only to name the
+    item on each row: a team feed spans many items, so "assigned this item" is ambiguous
+    without it.
+
+    `since` and `until` are inclusive bounds, which is what a date-range control means when
+    it says "from" and "to". The cursor is applied on top, so a caller paging a range gets
+    the next page *of that range*. `actor_id` narrows to one person's actions; it can only
+    remove rows from a set that is already team-scoped, so it cannot widen access.
     """
-    statement = EVENT_QUERY.where(ActivityEvent.team_id == team_id)
+    statement = (
+        EVENT_QUERY.add_columns(WorkItem.title.label("work_item_title"))
+        .join(WorkItem, WorkItem.id == ActivityEvent.work_item_id)
+        .where(ActivityEvent.team_id == team_id)
+    )
+    if since is not None:
+        statement = statement.where(ActivityEvent.created_at >= since)
+    if until is not None:
+        statement = statement.where(ActivityEvent.created_at <= until)
+    if actor_id is not None:
+        statement = statement.where(ActivityEvent.actor_id == actor_id)
     if cursor is not None:
         statement = statement.where(
             descending_keyset(ActivityEvent.created_at, ActivityEvent.id, cursor)
@@ -178,6 +199,9 @@ async def list_team_activity(
     team_id: uuid.UUID,
     cursor: Cursor | None = None,
     limit: int = DEFAULT_PAGE_SIZE,
+    since: dt.datetime | None = None,
+    until: dt.datetime | None = None,
+    actor_id: uuid.UUID | None = None,
 ) -> tuple[list[Any], bool]:
     """One page of a team's activity feed.
 
@@ -187,7 +211,16 @@ async def list_team_activity(
     """
     principal.require_permission(team_id, Permission.VIEW_TEAM)
     return await _page(
-        session, team_activity_statement(team_id=team_id, cursor=cursor, limit=limit), limit
+        session,
+        team_activity_statement(
+            team_id=team_id,
+            cursor=cursor,
+            limit=limit,
+            since=since,
+            until=until,
+            actor_id=actor_id,
+        ),
+        limit,
     )
 
 

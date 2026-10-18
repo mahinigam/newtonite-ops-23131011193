@@ -32,6 +32,11 @@ class ActivityEventResponse(ResponseModel):
     meta: dict[str, Any]
     actor: UserRef
     created_at: datetime
+    #: The item's title *as it is now*, joined when a feed shows more than one item.
+    #: A timeline for one item does not need it and leaves it null. It is read live rather
+    #: than copied into `meta` at write time, so a rename shows through instead of the
+    #: history naming a title the item no longer has.
+    work_item_title: str | None = None
 
     @classmethod
     def from_row(cls, row: Any) -> ActivityEventResponse:
@@ -48,6 +53,7 @@ class ActivityEventResponse(ResponseModel):
                 display_name=row.actor_name,
             ),
             created_at=row.created_at,
+            work_item_title=getattr(row, "work_item_title", None),
         )
 
 

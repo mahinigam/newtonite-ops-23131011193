@@ -92,6 +92,7 @@ export function event(overrides: Partial<ActivityEvent> = {}): ActivityEvent {
     meta: {},
     actor: NINA,
     created_at: '2026-10-15T10:00:00Z',
+    work_item_title: null,
     ...overrides,
   }
 }

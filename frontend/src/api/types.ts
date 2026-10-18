@@ -149,6 +149,19 @@ export interface ActivityEvent {
   meta: Record<string, unknown>
   actor: UserRef
   created_at: string
+  /**
+   * The item's title *now*, present only on a feed that spans many items.
+   *
+   * An item's own timeline leaves it null: the page already says which item it is.
+   */
+  work_item_title: string | null
+}
+
+/** The team feed's server-side filters. Absent values mean "no bound". */
+export interface ActivityFilters {
+  since?: string | null
+  until?: string | null
+  actor?: string | null
 }
 
 /** The filters the item list sends to the server. Every one is applied in PostgreSQL. */
