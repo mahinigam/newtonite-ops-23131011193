@@ -37,3 +37,4 @@ frontend/.vite/
 # redistributed, so they are excluded at the repository root. Nested paths such
 # as docs/*.pdf are unaffected.
 /*.pdf
+frontend/.vitest/
