@@ -82,6 +82,28 @@ locally maintained copy, and nothing is filtered or sorted in the browser.
   so an expired token returns the user to the sign-in screen rather than leaving a page showing
   an error it can never recover from.
 
+## The activity feed says what it is about
+
+History is one component (`features/items/ActivityTimeline.tsx`) used twice. An item's page
+already identifies the item, so its rows read "Nina Petrova claimed this item". A team feed
+spans many items, so the page passes `itemHref` and each row names the item's **current** title
+as a link instead — otherwise the feed is a wall of "this item" rows with no way to tell them
+apart. The title is joined by the server at read time; the browser does not look items up.
+
+The feed is also filterable by date range and actor, both as server query parameters. The range
+is part of the query key, so changing it starts a new first page rather than filtering what is
+already loaded. "To 18 Oct" is sent as the last millisecond of that local day: a range control
+that silently drops its final day would be wrong, so the bounds are inclusive.
+
+The rail beside each row carries a three-word legend — approved, sent back, status change. The
+text of the row says the same thing, so the colour is a reading aid rather than the only signal.
+
+A failed *next* page is not a failed view: the rows already read stay on screen, and an inline
+retry re-requests that one page with `fetchNextPage` rather than `refetch`, which on an
+infinite query would re-walk every page loaded so far. Both behaviours are covered by
+`features/activity/TeamActivityPage.test.tsx`, including a three-page walk where the retry is
+asserted to be a single request carrying the failed page's cursor.
+
 ## Retries, and why only two mutations retry
 
 Retrying a write is only safe when the server can recognise the retry. The default for
@@ -138,7 +160,7 @@ is prose.
 
 ## Tests
 
-`npm run test` runs 79 tests in nine files. They render real components against a real
+`npm run test` runs 83 tests in ten files. They render real components against a real
 TanStack Query client and a **stubbed `fetch`** (`src/test/fetch.ts`) rather than mocking the API
 module, so the error envelope, the `ETag` header and the query parameters are all covered. Every
 request is recorded, which is how the tests assert on what the *server* was asked for: that a
@@ -156,6 +178,7 @@ reused its key.
 | `features/items/ItemDetailPage.test.tsx` | The role boundary; optimistic claim, its rollback and its `ETag`; `412` handling |
 | `features/notifications/NotificationsPage.test.tsx` | The list, the unread count, acknowledging one and all, a failed acknowledgement, scoping |
 | `features/items/CommentThread.test.tsx` | Idempotency-key reuse across a retry, length limits, viewer read-only |
+| `features/activity/TeamActivityPage.test.tsx` | Item title and link per row, inclusive date bounds as server parameters, a failed next page retried once |
 
 What the frontend tests do **not** prove is the wire format — they stub the network. That is
 covered separately by a contract check that sends the same requests to a running API; see the

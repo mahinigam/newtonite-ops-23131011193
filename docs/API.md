@@ -455,7 +455,8 @@ Each event is:
   "to_value": "resolved",
   "meta": {},
   "actor": { "id": "…", "email": "…", "display_name": "…" },
-  "created_at": "2026-10-17T09:14:02.118000Z"
+  "created_at": "2026-10-17T09:14:02.118000Z",
+  "work_item_title": "Refund the duplicate charge"
 }
 ```
 
@@ -466,6 +467,12 @@ a client must work without it. `event_type` is one of `created`, `claimed`, `ass
 `unassigned`, `status_changed`, `approved`, `rejected`, `priority_changed`,
 `due_date_changed`, `type_changed`, `title_changed`, `description_changed`, `commented`.
 
+`work_item_title` is the item's **current** title. It is present on the team feed, where a
+row would otherwise say only "this item", and `null` on an item's own timeline, which already
+knows which item it is showing. It is joined at read time rather than copied into `meta` at
+write time, so a rename shows through the history — unlike a notification body, which is a
+message that was sent and is therefore a snapshot.
+
 ### `GET /items/{item_id}/activity`
 
 One item's timeline, newest first.
@@ -473,8 +480,28 @@ One item's timeline, newest first.
 ### `GET /teams/{team_id}/activity`
 
 Everything that has happened in one team, newest first. It is built from the event's
-denormalised `team_id`, so the feed needs no join back to `work_items` and cannot be
-assembled by a query that forgot the team filter.
+denormalised `team_id`, so the feed cannot be assembled by a query that forgot the team
+filter. Each row carries the item's current title, because a feed spanning many items is
+unreadable without it.
+
+| Parameter | Meaning |
+| --- | --- |
+| `cursor` | `next_cursor` from the previous page of **this** feed |
+| `limit` | 1–100, default 25 |
+| `since` | Inclusive lower bound, ISO 8601 **with an offset** |
+| `until` | Inclusive upper bound, ISO 8601 **with an offset** |
+| `actor` | `me`, or a user id: only that person's actions |
+
+The bounds are inclusive on both ends, which is what a "From / To" control means: a row
+written exactly at the boundary belongs to the window. A bound without an offset is
+`422 validation_failed` — the instant is otherwise ambiguous — as is `since` later than
+`until`, an unparseable timestamp, or an `actor` that is neither `me` nor an id. The cursor
+applies on top of the bounds, so paging a range walks that range, and a client that changes
+the range starts again from a null cursor.
+
+`actor` can only remove rows from a set that is already scoped to the team. A valid id for
+somebody outside the team therefore returns an empty page, not an error, and never another
+team's events.
 
 ### Paging, and why the cursors are not interchangeable
 

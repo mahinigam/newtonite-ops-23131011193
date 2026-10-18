@@ -3,7 +3,7 @@
 This document states what the project does **not** do, why, and what it would take to
 address each item. It is updated every phase and reflects the code as pushed.
 
-Last updated: 2026-10-18 (end of Phase 7).
+Last updated: 2026-10-18 (end of Phase 9).
 
 ## Not built yet, by plan
 
@@ -54,7 +54,7 @@ deferred.
 | No observability beyond structured logs | Diagnosing a production incident would rely on logs alone | Add request IDs, metrics and tracing when the deployment target is known |
 | The idle session window can be enforced up to ~60 s late | `last_used_at` is refreshed at most once a minute, so a session that has just gone idle takes effect slightly later | Deliberate: the alternative turns every read into a write. Documented in `ENGINEERING_DECISIONS.md`, with the interval as a tunable constant |
 | A revoked or expired session is reported, but a stale role is not | A session carries no role of its own, so a role change applies from the next request rather than forcing a re-login. This is intended, not a defect | Documented in `SECURITY.md`; no change planned |
-| An item's comment thread and timeline are not searchable or filterable | There is no `q` or date filter on either activity view, so finding an old note means paging to it. A thread is short and a timeline is read in context, so the cost is low | Add the same `websearch_to_tsquery` filter the item list uses, over the comment body |
+| The activity views are not text-searchable | Neither view has a `q`. The team feed can be narrowed by date range and actor, but finding an old *note* still means paging to it, and an item's timeline has no filter at all. A thread is short and a timeline is read in context, so the cost is low | Add the same `websearch_to_tsquery` filter the item list uses, over the comment body |
 | Activity rows are not pruned | `activity_events` grows with every mutation and is never archived. At demo scale it is thousands of rows; over years it would be the largest table | Partition by month, or archive closed items' history to cold storage |
 | A page reload signs the user out | The token is held in memory only, so the credential dies with the page. Deliberate: it is the only storage option where closing a tab destroys the token | `sessionStorage` if the reload cost outweighs the shorter exposure; `HttpOnly` cookies with `SameSite=Strict` plus an anti-CSRF token is the real production answer |
 | No member-management UI | The API supports adding, changing and removing members (admin only, with the last-admin and assigned-items rules enforced) but the interface has no screen for it. It is outside the work-item vertical slice | A team settings view; the endpoints and their tests already exist |

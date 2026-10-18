@@ -87,10 +87,10 @@ assignment and a deploy never silently stops delivery. The reasoning is in
 | Sign-in, team switcher, item list with server-side filters and cursor paging | Working |
 | Item detail: claim, workflow moves, edit, comments, history | Working |
 | Optimistic claim with tested rollback and reconciliation to the server's state | Working, tested |
-| Team activity feed, paged with its own cursor | Working |
+| Team activity feed: names and links each row's item, date-range and actor filters, paged with its own cursor | Working |
 | Loading, empty, error and conflict states on every server-backed view | Working |
-| Backend test suite against real PostgreSQL | Working (229 tests) |
-| Frontend test suite (vitest + React Testing Library) | Working (79 tests) |
+| Backend test suite against real PostgreSQL | Working (234 tests) |
+| Frontend test suite (vitest + React Testing Library) | Working (83 tests) |
 | One-command stack: `docker compose up --build` runs database, API, worker and web | Working, verified end to end |
 | Docker Compose PostgreSQL for reviewers | Working |
 | CI: backend and frontend jobs, formatting, lint, types, migrate, seed, tests, build | Working |
@@ -422,7 +422,7 @@ The backend suite runs against `TEST_DATABASE_URL` and applies migrations to hea
 no manual preparation is needed beyond creating the empty `newtonite_test` database. The
 frontend suite needs no database: it stubs `fetch`, so it runs in about two seconds.
 
-Current totals, from the commands above: **229 backend tests** in about 50 s and **79
+Current totals, from the commands above: **234 backend tests** in about 45 s and **83
 frontend tests** in about 2 s. The suites that carry the domain guarantees are worth opening
 first:
 

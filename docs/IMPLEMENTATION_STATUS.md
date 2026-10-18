@@ -3,9 +3,9 @@
 A truthful, phase-by-phase record. "Verified" means the listed command was run and its
 result observed in this repository — not that the code looks correct.
 
-**Branch:** `feature/newtonite-operations-platform`, merged to `main`; Phase 7–8 work on
+**Branch:** `feature/newtonite-operations-platform`, merged to `main`; Phases 7–9 on
 `feature/outbox-notifications`
-**Last updated:** 2026-10-18 (end of Phase 8)
+**Last updated:** 2026-10-18 (end of Phase 9)
 
 ## Phase summary
 
@@ -20,6 +20,7 @@ result observed in this repository — not that the code looks correct.
 | 6 | Frontend vertical slice | Complete | See below |
 | 7 | Transactional outbox, worker, notifications and `/me/items` | Complete | 229 backend and 79 frontend tests; see below |
 | 8 | Documentation, the container stack and reviewer readiness | Complete | `make check`, `docker compose up --build`, 26/26 HTTP checks; see below |
+| 9 | The activity feed: item identity, dates, and retrying one page | Complete | 234 backend and 83 frontend tests; `make check`; see below |
 
 ## Phase 0 — Reconnaissance and design
 
@@ -743,7 +744,7 @@ so every load-bearing claim was checked against the running system rather than r
 | The demo accounts in `README.md` | Compared against the users `scripts/seed.py` creates | 12/12 match exactly |
 | The `Makefile` targets named in the README | `make help` | Every documented target exists, including `worker`, `worker-once`, `stack-up`, `stack-down` |
 | `.env.example` | Read it | Placeholders only; the outbox settings were added |
-| Test counts stated in the README and here | `uv run pytest --collect-only -q`, `npx vitest run` | 229 backend, 79 frontend — both match |
+| Test counts stated in the README and here | `uv run pytest --collect-only -q`, `npx vitest run` | 229 backend, 79 frontend — both matched at the end of Phase 8; Phase 9 adds five and four |
 | Filter values in `docs/API.md` | Compared with `app/models/enums.py` | **Corrected**: the documented item types were `task, bug, incident, payment, request`; the real set is `incident, customer_issue, payment, compliance, task` |
 | The index claim for `ix_work_items_assignee_created` | `scripts/explain_lists.py`, extended with the `/me/items` shape | **Corrected and measured**: the team list intersects it with the team index; `/me/items` seeks it alone. Both plans are now in `docs/DATA_MODEL.md` |
 | The "not built" list in `docs/KNOWN_LIMITATIONS.md` | Compared against the route table, the worker and the frontend's views | Accurate — the outbox row was replaced by the three genuine gaps (second channel, push, shareable presets) |
@@ -774,6 +775,76 @@ from the new name.
 **Known defects.** None known. The residual risks are the documented ones in
 [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md) — chiefly no login rate limiting, no
 browser-driven end-to-end test in CI, and no hosted deployment.
+
+## Phase 9 — The activity feed, read the way a reviewer read it
+
+**Requirements.** The feed had been verified as a query but not as a page. Reading it produced
+three complaints, and all three were real:
+
+1. every row said "this item", with no title and no link, so a feed spanning 3 000 items could
+   not say what it was about;
+2. the coloured rails meant something to the stylesheet and nothing to the reader, and
+   `approved` and `rejected` shared one colour while `assigned` had none;
+3. reaching older history took 114 clicks for one seeded team, a range could not be chosen, and
+   a failed page retried by re-walking every page already loaded.
+
+**What was built — backend.**
+
+- `ActivityEventResponse.work_item_title`, populated by a primary-key join in
+  `team_activity_statement` **only**, and left `null` on an item's timeline. It is the item's
+  title at read time, not a snapshot, so a rename shows through.
+- `since`, `until` and `actor` on `GET /teams/{team_id}/activity`. Both bounds are inclusive, so
+  "To 18 Oct" includes the 18th; a bound without an offset, an inverted range, an unparseable
+  timestamp or an `actor` that is neither `me` nor an id are `422 validation_failed`. The bounds
+  are applied before the cursor, and `actor` can only remove rows from a set that is already
+  team-scoped.
+- No migration. Nothing new is stored, and the existing `(team_id, created_at DESC, id DESC)`
+  index serves both bounds.
+
+**What was built — frontend.**
+
+- `ActivityList` takes `itemHref`. The team feed passes the router's own `pathFor`, so a row
+  reads `Lena Fischer changed the status of “Refund the duplicate charge”` with the title
+  linked; the item page keeps "changed the status" because the page is the item. The verbs come
+  from a second label map with their own prepositions rather than string surgery on one.
+- Rails: `approved` green, `rejected` amber, `status_changed` blue, everything else neutral —
+  and a three-word legend above the list. The row's text says the same thing, so colour is
+  redundant by design.
+- A From/To date range, part of the query key, converted to inclusive instants in the browser's
+  time zone (`endOfLocalDay` sends the last millisecond of the chosen day). Changing it starts a
+  new first page; Clear removes it.
+- A failed **next** page renders an inline retry that calls `fetchNextPage()`, leaving the pages
+  already read in place. A failed first page keeps the full `ErrorState`.
+
+**Verification.**
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Backend suite | `uv run pytest` | **234 passed** in 41.2 s against real PostgreSQL |
+| Frontend suite | `npm run test` | **83 passed** in ten files |
+| Every gate at once | `make check` | ruff format and check, mypy (88 files), eslint, `tsc --noEmit`, **234 + 83 tests**, production build |
+| Production build | `npm run build` | 309.16 kB JS (91.86 kB gzip), 11.23 kB CSS (2.77 kB gzip) |
+| Migration drift | `uv run alembic check` | "No new upgrade operations detected" — no schema change in this phase |
+
+**Tests added.**
+
+- `tests/test_activity_api.py` (five): the feed's title and the timeline's `null`; a rename
+  showing through; both bounds including the row on the boundary and a range composing with a
+  cursor; `actor` narrowing without widening; the four `422` cases.
+- `features/activity/TeamActivityPage.test.tsx` (three): the linked title and the legend; the
+  inclusive date parameters with a cursor reset and a working Clear; a three-page walk where
+  page 3 fails and the retry is asserted to be **one** request carrying `cursor-2`, not a
+  re-walk of pages 1–3.
+- `features/items/ItemDetailPage.test.tsx` (one): the item timeline still says "this item" and
+  contains no item link.
+
+**What was not weakened.** No existing assertion was changed to accommodate the new behaviour;
+the one earlier test this phase touched (`ItemDetailPage`'s activity stub) gained an optional
+fixture and kept its empty-page default. The retry test is three pages deep specifically so
+that `refetch()` would fail it.
+
+**Counts.** The totals are now **234 backend** and **83 frontend**. Earlier phase records keep
+the counts they observed when they were run.
 
 ## How to read this document
 

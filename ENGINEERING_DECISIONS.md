@@ -1272,6 +1272,64 @@ passed. The exact commands and results are in
 
 ---
 
+## 28. A feed says what it is about, and colour is never the only signal
+
+**Context.** The team feed is the same component as an item's timeline, which was a good
+decision for the query and a bad one for the wording. Reusing the item page's labels meant
+every row read "Lena Fischer assigned this item": correct on an item's page, useless in a feed
+that spans 3 000 items and about 2 800 events per team. The event carried `work_item_id`, so
+the identity was there — the view simply threw it away. The same screenshot also showed rows
+with coloured rails and nothing on screen explaining them.
+
+**Options considered for the item's name.**
+
+1. Load the team's items in the browser and look titles up. Rejected: it is exactly the
+   "filter and join in the client" pattern the rest of the project avoids, and it would fail
+   once the list is paged.
+2. Copy the title into the event's `meta` when the event is written. Rejected: `meta` is
+   documented as optional rendering help, and a snapshot goes stale after a rename — the feed
+   would name an item by a title it no longer has.
+3. Join the item's **current** title at read time, only for the team feed.
+
+**Choice.** Option 3. `work_item_title` is a nullable column on the response, populated by a
+primary-key join in `team_activity_statement` and left null on an item's timeline, which does
+not need it. The wording is a second label map rather than a string replacement: each event
+type has a verb that reads correctly before a title ("changed the status of", "commented on"),
+so the row is a sentence rather than a template with a hole in it.
+
+**Choice, for the colour.** The rail is keyed to the event's meaning — approved is green, sent
+back is amber, a status change is blue, everything else is neutral — and a three-word legend
+sits above the list. The text of each row already says the same thing, so the colour is
+redundant on purpose: it is a reading aid, never the only signal, and the legend makes it
+explicit instead of decorative.
+
+**Choice, for reachability.** A feed that only offered "Show older events" needed 114 clicks to
+reach the start of one team's history. The server now accepts `since`, `until` and `actor`.
+Both bounds are **inclusive**: a "To 18 Oct" control that excluded the 18th would be a quiet
+bug, so the browser sends the last millisecond of the chosen local day and the API compares
+inclusively. The bounds use the existing `(team_id, created_at, id)` index and are applied
+before the keyset cursor, so paging walks the range rather than the team.
+
+**Trade-offs.**
+
+- Accepted: one indexed join per feed row (25 rows a page), which is cheaper than a second
+  request and cannot go stale.
+- Accepted: an extra nullable field in the activity schema, which item timelines leave empty.
+- Accepted: a range is not in the URL, so a reload returns to the unfiltered feed. The control
+  is deliberate and local; putting it in the route would need a second serialisation format
+  for the same three values.
+- Rejected: a naive `before` (exclusive) bound. "Before 18 Oct" reads naturally but makes the
+  obvious date-picker value exclude the day the user selected; inclusivity plus a documented
+  end-of-day conversion is the less surprising pair.
+
+**Consequences and verification.** `tests/test_activity_api.py` asserts the feed's title, that
+the timeline's is null, that a rename shows through, that both bounds include the row on the
+boundary, that a range and a cursor compose, and that a foreign or unknown actor yields an
+empty page rather than another team's rows. `features/activity/TeamActivityPage.test.tsx`
+asserts the linked title, the legend, the date parameters (including the inclusive end), the
+cursor reset, and — with three pages loaded — that retrying a failed next page is **one**
+request carrying the failed cursor, not a re-walk of every page.
+
 ## Decisions taken, not yet implemented
 
 Listed so the direction is explicit without implying that the behaviour exists.
