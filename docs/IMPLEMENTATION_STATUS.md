@@ -773,7 +773,7 @@ redirects the old URL, and the clone command in the README was updated and then 
 from the new name.
 
 **Known defects.** None known. The residual risks are the documented ones in
-[`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md) — chiefly no login rate limiting, no
+[`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md) — chiefly no login rate limiting, no
 browser-driven end-to-end test in CI, and no hosted deployment.
 
 ## Phase 9 — The activity feed, read the way a reviewer read it

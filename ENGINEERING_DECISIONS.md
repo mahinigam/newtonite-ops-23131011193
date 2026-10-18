@@ -5,6 +5,34 @@ context, options considered, the choice, why, the trade-offs, and how the decisi
 verified. Anything not yet implemented is listed separately at the end so this document
 never describes hypothetical behaviour as if it existed.
 
+## The five decisions that matter most
+
+The brief asks for a short document with approximately five important decisions. These are
+the five. Each links to the fuller record below; the remaining records are supporting
+decisions, implementation notes, and smaller choices that did not need their own trade-off
+discussion in the submission.
+
+1. **Relational state plus append-only history.** PostgreSQL holds the current item, and
+   every important change appends an activity event in the same transaction, so history
+   cannot disagree with the item. See
+   [decision 2](#2-relational-current-state-plus-append-only-activity-history-not-event-sourcing).
+2. **PostgreSQL decides the races.** Claiming is one conditional `UPDATE`; edits and
+   transitions require `If-Match` and return `412` when stale; creates and comments use an
+   `Idempotency-Key`. See
+   [decisions 9–11](#9-claiming-is-one-conditional-update-not-a-read-then-write).
+3. **Authorization is a server-side permission matrix.** Every team-scoped route loads the
+   caller's membership and asks the policy layer; the interface only reflects those
+   decisions. See [decision 8](#8-authorization-as-an-explicit-permission-matrix).
+4. **Notifications are asynchronous, through a transactional outbox.** The assignment and
+   the intent to notify commit together; a worker retries, caps attempts, and the consumer
+   is idempotent. See
+   [decision 23](#23-the-outbox-is-a-table-and-the-worker-is-a-separate-process).
+5. **Lists are server-filtered and keyset-paginated, with measured indexes.** The browser
+   never loads the dataset to filter it, and the cursor has a total order. See
+   [decisions 13–14](#13-keyset-pagination-with-a-total-order).
+
+The detailed records follow, in the order they were made.
+
 ---
 
 ## 1. Modular monolith rather than services

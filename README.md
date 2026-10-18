@@ -422,7 +422,7 @@ The backend suite runs against `TEST_DATABASE_URL` and applies migrations to hea
 no manual preparation is needed beyond creating the empty `newtonite_test` database. The
 frontend suite needs no database: it stubs `fetch`, so it runs in about two seconds.
 
-Current totals, from the commands above: **234 backend tests** in about 45 s and **83
+Current totals, from the commands above: **234 backend tests** in under a minute and **83
 frontend tests** in about 2 s. The suites that carry the domain guarantees are worth opening
 first:
 
@@ -430,8 +430,8 @@ first:
 | --- | --- |
 | `tests/test_claim.py`, `tests/test_items_concurrency.py` | two concurrent claims, one owner |
 | `tests/test_items_update.py`, `tests/test_transitions.py` | stale versions refused; illegal transitions refused |
-| `tests/test_idempotency.py`, `tests/test_items_create.py` | retries cannot duplicate; payload reuse is rejected |
-| `tests/test_authorization.py`, `tests/test_memberships.py` | cross-team and role boundaries, including the last-admin rule |
+| `tests/test_items_create.py`, `tests/test_comments.py`, `tests/test_items_concurrency.py` | retries cannot duplicate; payload reuse is rejected |
+| `tests/test_authorization.py`, `tests/test_auth.py` | cross-team and role boundaries, including the last-admin rule |
 | `tests/test_activity_atomicity.py` | a failed history write rolls the mutation back |
 | `tests/test_outbox.py` | queue-in-transaction, two-worker delivery, replay safety, retry exhaustion |
 | `tests/test_notifications.py` | self-scoped reads, unread counts, acknowledgement, cross-team refusal |
