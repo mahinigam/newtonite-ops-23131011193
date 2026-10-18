@@ -526,11 +526,13 @@ docs/                 architecture, frontend, API, decisions, status and review 
 - Notifications are scoped to the recipient, not to a team parameter, and the database's
   composite foreign key keeps a recipient inside the team the notification is about. Reading
   somebody else's notification is a `404`.
-- The browser holds the session token **in memory only** — never in `localStorage` or
-  `sessionStorage`. The cost is real and accepted: a page reload signs you out. Web storage
-  is readable by any script on the page, so keeping the token out of it is the only option
-  where closing a tab destroys the credential. The reasoning, including why `HttpOnly`
-  cookies were not chosen, is in [`docs/SECURITY.md`](docs/SECURITY.md).
+- The access token lives in JavaScript memory only — never in `localStorage` or
+  `sessionStorage` — so an XSS bug cannot steal a credential that outlives the tab. A page
+  reload silently refreshes the access token from the HttpOnly refresh cookie, so the
+  session survives. The refresh token is never visible to JavaScript; closing a tab
+  destroys the in-memory access token but the refresh cookie persists until it expires or
+  is revoked. The reasoning, including why an `HttpOnly` cookie is used for the refresh
+  token but not the access token, is in [`docs/SECURITY.md`](docs/SECURITY.md).
 - Not yet built and documented as such: login rate limiting, password reset, and MFA. See
   [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md) for the residual risk.
 
