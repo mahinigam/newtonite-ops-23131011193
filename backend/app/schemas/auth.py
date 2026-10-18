@@ -40,10 +40,18 @@ class MembershipSummary(ResponseModel):
     role: Role
 
 
-class LoginResponse(ResponseModel):
-    token: str
-    token_type: str = "Bearer"
-    expires_at: datetime
+class TokenPairResponse(ResponseModel):
+    """Token pair returned by login and refresh.
+
+    The access token is carried in the `Authorization: Bearer` header.
+    The refresh token is delivered via an HttpOnly cookie scoped to
+    `/api/v1/auth/refresh` and does not appear in this response body.
+    """
+
+    access_token: str
+    access_token_type: str = "Bearer"
+    access_expires_at: datetime
+    refresh_expires_at: datetime
     user: UserSummary
 
 

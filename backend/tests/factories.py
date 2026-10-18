@@ -588,7 +588,7 @@ async def login(client: AsyncClient, email: str, password: str = TEST_PASSWORD) 
     """Log in and return the bearer token, failing loudly if it does not work."""
     response = await client.post("/api/v1/auth/login", json={"email": email, "password": password})
     assert response.status_code == 200, response.text
-    return str(response.json()["token"])
+    return str(response.json()["access_token"])
 
 
 async def scenario(

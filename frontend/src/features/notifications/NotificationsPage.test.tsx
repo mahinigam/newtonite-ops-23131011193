@@ -34,10 +34,10 @@ const LIST_PATH = '/api/v1/notifications'
 const UNREAD_PATH = '/api/v1/notifications/unread-count'
 
 beforeEach(() => {
-  sessionStore.start('test-token', {
+  sessionStore.start({
     user: NINA,
     memberships: [membership()],
-    expiresAt: '2099-01-01T00:00:00Z',
+    accessExpiresAt: '2099-01-01T00:00:00Z',
   })
 })
 

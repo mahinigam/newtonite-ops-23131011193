@@ -32,8 +32,8 @@ async def test_login_returns_a_token_and_the_user(client: AsyncClient, db: Async
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["token_type"] == "Bearer"
-    assert len(body["token"]) == TOKEN_LENGTH
+    assert body["access_token_type"] == "Bearer"
+    assert len(body["access_token"]) == TOKEN_LENGTH
     assert body["user"]["email"] == "nina@newtonite.dev"
     # The response describes the user; it must not describe their credentials.
     assert "password_hash" not in body["user"]

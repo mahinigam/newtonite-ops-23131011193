@@ -33,6 +33,12 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://newtonite:newtonite_dev_pw@127.0.0.1:5432/newtonite_test"
     )
 
+    # Access token (short-lived, carried in Authorization header)
+    access_token_ttl_minutes: int = Field(default=5, ge=1, le=60)
+    # Refresh token (long-lived, delivered via HttpOnly cookie)
+    refresh_token_ttl_days: int = Field(default=7, ge=1, le=90)
+    # Legacy session settings — kept for backward compatibility during migration;
+    # new code uses access_token_ttl_minutes and refresh_token_ttl_days.
     session_absolute_ttl_hours: int = Field(default=12, ge=1, le=24 * 30)
     session_idle_ttl_hours: int = Field(default=2, ge=1, le=24 * 30)
 

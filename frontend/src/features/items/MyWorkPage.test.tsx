@@ -32,7 +32,7 @@ import { MyWorkPage } from './MyWorkPage'
 const ME_ITEMS_PATH = '/api/v1/me/items'
 
 beforeEach(() => {
-  sessionStore.start('test-token', {
+  sessionStore.start({
     user: NINA,
     memberships: [
       membership(),
@@ -43,7 +43,7 @@ beforeEach(() => {
         role: 'viewer',
       }),
     ],
-    expiresAt: '2099-01-01T00:00:00Z',
+    accessExpiresAt: '2099-01-01T00:00:00Z',
   })
 })
 
@@ -114,7 +114,11 @@ describe('MyWorkPage', () => {
 
     await waitFor(() => {
       const last = calls.at(-1)
-      expect(last?.searchParams.getAll('priority').sort()).toEqual(['high', 'urgent'])
+      const priorityParams = last?.searchParams.getAll('priority')
+      if (!priorityParams?.length) {
+        throw new Error('No priority params. Last URL: ' + (last?.url || 'none') + ' | Calls: ' + calls.length)
+      }
+      expect(priorityParams.sort()).toEqual(['high', 'urgent'])
       expect(last?.searchParams.has('assignee')).toBe(false)
     })
   })

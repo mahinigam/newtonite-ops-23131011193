@@ -5,22 +5,20 @@
  * clear the session from outside React (any `401` ends it), and a store is directly
  * testable without rendering anything.
  *
- * **The token is never written to `localStorage` or `sessionStorage`.** Web storage is
- * readable by any script on the page, so an XSS bug becomes a stolen credential that
- * outlives the tab. Keeping it in memory means a refresh signs the user out — an
- * acceptable cost for an internal tool, and the trade-off is stated in
- * `docs/SECURITY.md` rather than left implicit.
+ * The **access token** is held in memory (in `api/client.ts`). The **refresh token**
+ * is an HttpOnly cookie managed by the browser — we never see it. Silent refresh is
+ * handled by the HTTP client when a 401 is encountered.
  */
 
 import { useSyncExternalStore } from 'react'
 
-import { setToken } from '../api/client'
+import { onTokenPairReceived } from '../api/client'
 import type { Membership, UserRef } from '../api/types'
 
 export interface Session {
   user: UserRef
   memberships: Membership[]
-  expiresAt: string
+  accessExpiresAt: string
 }
 
 type Listener = () => void
@@ -44,10 +42,20 @@ export const sessionStore = {
     }
   },
 
-  /** Adopt a token and the caller it belongs to. */
-  start(token: string, session: Session): void {
-    setToken(token)
-    current = session
+  /** Adopt a token pair and the caller it belongs to. */
+  start(pair: { user: UserRef; memberships: Membership[]; accessExpiresAt: string }): void {
+    onTokenPairReceived({
+      access_token: '', // already set by client
+      access_token_type: 'Bearer',
+      access_expires_at: pair.accessExpiresAt,
+      refresh_expires_at: '', // not used by store
+      user: pair.user,
+    })
+    current = {
+      user: pair.user,
+      memberships: pair.memberships,
+      accessExpiresAt: pair.accessExpiresAt,
+    }
     emit()
   },
 
@@ -56,7 +64,6 @@ export const sessionStore = {
    * token cannot leave the interface looking signed in.
    */
   clear(): void {
-    setToken(null)
     current = null
     emit()
   },
