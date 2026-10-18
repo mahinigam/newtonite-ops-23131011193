@@ -1,7 +1,8 @@
 # Architecture
 
-A modular monolith. One FastAPI process, one PostgreSQL database, and internal boundaries
-that are enforced by review rather than by a network.
+A modular monolith. One FastAPI process for requests, one worker process for queued delivery,
+one PostgreSQL database, and internal boundaries that are enforced by review rather than by a
+network. The two processes are the same codebase started with a different command.
 
 ## Layers
 
@@ -20,6 +21,7 @@ app/models/         SQLAlchemy ORM: tables, relationships, enum values
     │
     ▼
 PostgreSQL          constraints, unique indexes, triggers, the authoritative clock
+                    (also the queue: `outbox_events`, read by `app/worker.py`)
 ```
 
 Two supporting modules sit across those layers:
@@ -29,11 +31,43 @@ Two supporting modules sit across those layers:
 | `app/policy/` | The role matrix (`roles.py`), the authenticated caller (`principal.py`), and the work-item state machine (`workflow.py`). The only place a role is compared and the only place a transition is declared legal. |
 | `app/errors.py` | The exception types and the single HTTP error envelope. |
 | `app/api/preconditions.py` | `ETag` construction and `If-Match` parsing — the HTTP spelling of an optimistic-concurrency check, in one place. |
+| `app/services/outbox.py` | Enqueueing an event inside the caller's transaction, and the worker's claim/retry bookkeeping. |
+| `app/worker.py` | The process that drains the outbox: claim a batch, deliver each event in its own savepoint, commit. |
 
 The direction of every arrow is one-way. Routers import services; services do not import
 routers. Services are callable from a test, a script or a worker without constructing a
 request, which is why the seed script can reuse none of them and the tests can call all of
 them.
+
+## Two processes, one database
+
+The API never delivers a notification. It writes an `outbox_events` row in the same
+transaction as the change that caused it, and a separate process does the delivery:
+
+```
+mutation ── one transaction ──► work_items + activity_events + outbox_events
+                                              │
+                          (committed, or not at all)
+                                              ▼
+worker loop ──► claim pending rows (FOR UPDATE SKIP LOCKED)
+            ──► deliver one event in its own savepoint
+            ──► mark delivered, or schedule a retry, or give up
+```
+
+Three properties follow, and each is tested:
+
+- **Nothing is owed but lost.** The outbox row commits with the mutation, so there is no
+  window in which the change exists and the notification was never queued.
+- **The request does not wait.** Delivery is not in the request path, so a slow notification
+  cannot slow an assignment, and a failing delivery cannot fail it.
+- **A restart does not lose the queue.** The queue is a table, so a deploy, a crash or a
+  stopped container leaves the work where it was. `SKIP LOCKED` lets more than one worker run
+  without either blocking the other.
+
+Delivery is **at-least-once**. The exactly-once part is the effect: `notifications` has a
+unique `outbox_event_id` and the consumer inserts with `ON CONFLICT DO NOTHING`, so replaying
+an event cannot produce a second notification. The reasoning and the alternatives are in
+[`ENGINEERING_DECISIONS.md`](../ENGINEERING_DECISIONS.md) 23.
 
 ## Request flow for a protected write
 
@@ -133,6 +167,10 @@ not the discussion.
 | Who may read an item's comments or timeline | `Principal.require_item_access` in `services/comments.py` and `services/activity.py` | The team comes from the item's own row, so the same rule cannot be forgotten by one of the readers |
 | Which list a cursor belongs to | `decode_cursor(..., id_kind=...)` at each route | A cursor names a position in one ordered result set; the id kind is the discriminator that refuses a cursor from another list |
 | Comments are append-only | No route exists; the `activity_events` trigger covers history | A missing route cannot be bypassed, and the history behind a comment is protected by the database |
+| A notification is owed the moment the change commits | `outbox_events` written by `services/outbox.py` in the caller's transaction | The queue row and the state change share a commit, so they cannot disagree |
+| One event produces at most one notification | `UNIQUE(notifications.outbox_event_id)` + `ON CONFLICT DO NOTHING` | At-least-once delivery is safe because the effect is made idempotent by the database, not by the handler |
+| A notification only reaches a member of the team | Composite FK `notifications(team_id, recipient_id) → memberships(team_id, user_id)` | The same boundary as an assignee, enforced in the same way |
+| A person reads only their own notifications | `recipient_id = principal.user.id` in `services/notifications.py`; somebody else's id is a `404` | The scope is the token, so it cannot be widened by a parameter |
 
 ## The frontend
 
@@ -147,8 +185,10 @@ constrain the backend:
   `available_transitions`, computed for the caller's role. The mirrored role matrix in
   `frontend/src/lib/permissions.ts` decides which *controls to draw*, never what is allowed.
 - **It accepts the server's answer rather than inventing one.** A write's response is the new
-  state and is adopted directly; a refused write is explained and the item is re-read. There
-  are no optimistic updates on the operations whose point is that exactly one caller wins.
+  state and is adopted directly, including the `ETag`; a refused write is explained and the
+  item is re-read. The single exception is the claim, which is shown immediately and rolled
+  back from a snapshot on failure — a decision with its own tests and its own section in
+  [`ENGINEERING_DECISIONS.md`](../ENGINEERING_DECISIONS.md) 24.
 - **The `ETag` is stored with the item, not beside it.** They are one fact — the version of
   that item — and keeping them apart is how a client ends up sending an old version with new
   data.

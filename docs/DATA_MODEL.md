@@ -2,17 +2,21 @@
 
 The database is the authoritative source of truth. This document describes what is
 stored, which rules the database itself enforces, why each index exists, and measured
-query behaviour. It reflects migrations `0001_initial_schema` and `0002_team_created_index`.
+query behaviour. It reflects migrations `0001_initial_schema`, `0002_team_created_index` and
+`0003_outbox_and_notifications`.
 
 ## Entities
 
 ```
 users ──< memberships >── teams
-  │                        │
-  │                        └──< work_items ──< comments
-  │                                 │
-  └──< auth_sessions                └──< activity_events
-  └──< idempotency_keys             (activity_events also carries team_id)
+  │                         │
+  │                         ├──< work_items ──< comments
+  │                         │         │
+  │                         │         ├──< activity_events   (append-only history)
+  │                         │         └──< notifications ──> outbox_events
+  │                         └──< outbox_events               (queued in the same transaction)
+  └──< auth_sessions
+  └──< idempotency_keys
 ```
 
 | Table | Holds | Notes |
@@ -25,6 +29,8 @@ users ──< memberships >── teams
 | `activity_events` | Append-only history | Written in the same transaction as the change |
 | `auth_sessions` | Login sessions | Stores only a SHA-256 digest of the token |
 | `idempotency_keys` | Retry records for writes | Keyed on `(actor_id, operation, key)` |
+| `outbox_events` | Work queued for asynchronous delivery | Written in the mutation's transaction and never committed on its own; drained by `python -m app.worker` |
+| `notifications` | One delivered notification per event and recipient | Delivery state, not history: it has `read_at` and is deleted when the recipient leaves the team |
 
 Roles are per team, not global: one account can be a `member` in one team and a `viewer`
 in another. The seed data contains exactly that case, and a test asserts it.
@@ -52,6 +58,11 @@ Application validation produces good error messages. These rules do **not** depe
 | Status, priority, type, role are from known sets | Named `CHECK` constraints | `test_status_is_constrained`, `test_index_inventory.py` |
 | Title is 3–200 characters, description ≤ 20 000, comment 1–4 000 | `CHECK` constraints | `test_title_length_is_enforced` |
 | `version` never drops below 1 | `CHECK (version >= 1)` | inventory test |
+| A notification recipient must be in the team it is about | Composite FK `notifications(team_id, recipient_id) → memberships(team_id, user_id)` | `test_a_notification_requires_a_recipient_in_the_team` |
+| One outbox event produces at most one notification | `UNIQUE(outbox_event_id)` — the exactly-once half of at-least-once delivery | `test_the_same_outbox_event_cannot_produce_two_notifications` |
+| Leaving a team removes the notifications about it | `ON DELETE CASCADE` on that composite FK | `test_leaving_a_team_removes_the_notifications_about_it` |
+| Outbox event types and statuses are known; `attempts >= 0` | Named `CHECK` constraints | `test_outbox_status_is_constrained`, `test_outbox_event_type_is_constrained`, inventory test |
+| A notification body is 1–500 characters | `CHECK (char_length(body) BETWEEN 1 AND 500)` | `test_a_notification_must_say_something` |
 | An idempotency key is unique per actor and operation | `UNIQUE(actor_id, operation, key)` | inventory test; exercised in Phase 4 |
 | Email looks like an email | `CHECK (position('@' in email) > 1)` — defence in depth, not validation | inventory test |
 
@@ -64,7 +75,7 @@ the table; ordinary `UPDATE` and `DELETE` are refused.
 | --- | --- |
 | `ix_work_items_team_status_created` on `(team_id, status, created_at DESC, id DESC)` | Team-scoped item lists filtered by status, newest first. The workhorse for the list and dashboard views |
 | `ix_work_items_team_created` on `(team_id, created_at DESC, id DESC)` | The same list **without** a status filter — the default view of a team's work. Added in revision `0002` after measuring that the index above cannot serve it (its second column is `status`, so there is nothing to seek on after `team_id`) |
-| `ix_work_items_assignee_created` on `(assignee_id, created_at DESC, id DESC)` | "Assigned to me" across the teams the caller belongs to |
+| `ix_work_items_assignee_created` on `(assignee_id, created_at DESC, id DESC)` | Both "assigned to me" shapes. The team list's `assignee=me` is this index intersected with the team index; `/me/items` seeks this index and restricts the result to the caller's membership set. One index, two scopes |
 | `ix_work_items_unassigned_urgent` on `(team_id, created_at DESC, id DESC) WHERE assignee_id IS NULL AND status = 'open' AND priority IN ('high','urgent')` | The unassigned-urgent queue. Partial so it stays small and only covers rows that queue can return |
 | `ix_work_items_search_vector` (GIN) | Full-text search over title + description |
 | `ix_activity_events_work_item_id_created_at` on `(work_item_id, created_at DESC, id DESC)` | One item's timeline, newest first — the item activity endpoint |
@@ -72,6 +83,9 @@ the table; ordinary `UPDATE` and `DELETE` are refused.
 | `ix_comments_work_item_id_created_at` on `(work_item_id, created_at, id)` | One item's comment thread. Declared ascending because that is the natural way to write it; the API reads it newest-first, which is the same index read backwards (or, for the handful of rows an item actually has, a bitmap scan of those rows and a tiny sort) |
 | `ix_memberships_user_id` on `(user_id)` | "Which teams does this user belong to" — the prefix the composite unique constraint cannot answer |
 | `ix_auth_sessions_user_id` on `(user_id)` | Token lookup and "revoke every session for this user" |
+| `ix_outbox_events_pending` on `(next_attempt_at, id) WHERE status = 'pending'` | The worker's claim query, exactly: pending rows, oldest due first. Partial, so the index tracks the backlog rather than everything ever delivered |
+| `ix_notifications_recipient_created` on `(recipient_id, created_at DESC, id DESC)` | A person's notification list, newest first, with `id` as the tie-breaker that makes the keyset cursor total |
+| `ix_notifications_recipient_unread` on `(recipient_id, created_at DESC, id DESC) WHERE read_at IS NULL` | The unread badge. Partial, because the count only ever asks about rows that can be unread |
 
 Every list index ends in `id` (descending, except the comment thread's ascending
 declaration) so the ordering is a total order: two items created in the same millisecond
@@ -127,7 +141,8 @@ was added.
 | Team list, filtered by status **and** priority | `Bitmap Index Scan on ix_work_items_team_status_created`, top-N sort | **0.67 ms** |
 | Queue: unassigned high-or-urgent items, any status | `Bitmap Index Scan on ix_work_items_team_created` | **0.62 ms** |
 | Queue: unassigned high-or-urgent **open** items | `Bitmap Index Scan on ix_work_items_unassigned_urgent` (the partial index), top-N sort | **0.17 ms** |
-| "Assigned to me" | `BitmapAnd` of `ix_work_items_assignee_created` and `ix_work_items_team_created` | **0.28 ms** |
+| Team list, `assignee=me` | `BitmapAnd` of `ix_work_items_assignee_created` and `ix_work_items_team_created` | **0.28 ms** |
+| My work (`/me/items`), caller in two teams | `Bitmap Index Scan on ix_work_items_assignee_created`, the membership set applied as a filter, top-N sort | **0.43 ms** |
 | Full-text search | `Bitmap Index Scan on ix_work_items_search_vector` | **0.10 ms** |
 | Team list, deep page by cursor (300 rows skipped) | `Index Scan using ix_work_items_team_created`, 301 rows removed by filter | **0.30 ms** |
 | One item's comment thread, newest first | `Bitmap Index Scan on ix_comments_work_item_id_created_at` | **0.04 ms** |
@@ -138,6 +153,20 @@ was added.
 Every list query also resolves the assignee, creator or actor through `Memoize`d
 primary-key lookups on `users`, so one page costs one lookup per distinct person, not one
 per row. The plan for the first item page completes with 44 buffer hits and no sort node.
+
+The two `/me/items` and team-list rows are both measured, because they are the same
+question asked at two scopes and the planner answers them differently. A single team lets it
+intersect the assignee index with that team's index (`BitmapAnd`); several teams make the
+intersection more expensive than filtering, so it seeks the assignee index alone and rejects
+the handful of rows outside the caller's memberships. Neither shape sorts the table — the
+sort is a top-N over the rows the index produced, and the ordering inside each index is the
+same `(created_at DESC, id DESC)` the cursor walks.
+
+The notification indexes are **not** in this table: the seed produces no notifications,
+because notifications are delivery state written by the worker rather than demo data. Their
+shape is the same keyset shape measured above, and their existence is asserted by
+`tests/test_index_inventory.py` rather than by a timing that would be measuring an empty
+table.
 
 The two item-scoped rows above are the same shape as each other and are deliberately
 reported as they are: the seed's longest thread has three comments and its longest

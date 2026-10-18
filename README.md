@@ -14,7 +14,45 @@ guess at it.
 > phase-by-phase state, and [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md) for
 > what is deliberately missing.
 
-## What works today (Phase 6 — the web application on top of a correct API)
+## How it fits together
+
+```mermaid
+flowchart LR
+    subgraph Browser
+        UI["React SPA<br/>token held in memory only"]
+    end
+
+    subgraph "API process (FastAPI)"
+        API["Routers<br/>validate, authorize, delegate"]
+        SVC["Services<br/>workflow · policy · paging"]
+        AUTH["Session auth<br/>opaque bearer token"]
+    end
+
+    subgraph "Worker process"
+        W["Outbox worker<br/>FOR UPDATE SKIP LOCKED"]
+    end
+
+    DB[("PostgreSQL 16<br/>state · append-only history<br/>outbox · idempotency keys")]
+
+    UI -->|"HTTPS, Bearer token"| API
+    API --> AUTH
+    API --> SVC
+    SVC -->|"one transaction:<br/>state + activity + outbox event"| DB
+    W -->|"claim pending events"| DB
+    W -->|"insert one notification per event"| DB
+    UI -->|"poll unread count"| API
+    API -->|"read state, history, notifications"| DB
+```
+
+Two boundaries carry most of the design. **Every mutation writes its state change, its
+history event and any outbox event in one database transaction**, so a crash cannot leave
+history describing something that did not happen. And **the worker is a separate process**
+that reads the queue from the same database, so a slow notification never delays an
+assignment and a deploy never silently stops delivery. The reasoning is in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
+[`ENGINEERING_DECISIONS.md`](ENGINEERING_DECISIONS.md) 23.
+
+## What works today (Phase 7 — asynchronous delivery, and the person-scoped views)
 
 | Capability | Status |
 | --- | --- |
@@ -39,22 +77,30 @@ guess at it.
 | Comments on an item, idempotent and append-only, readable by any team member | Working |
 | Activity read API: one item's timeline and a team's feed, each with its own cursor | Working, read-only by construction |
 | Liveness (`/healthz`) and readiness (`/readyz`) endpoints | Working |
+| Transactional outbox: events queued in the mutation's transaction, never committed early | Working, tested by rollback |
+| Outbox worker: batches with `FOR UPDATE SKIP LOCKED`, retries with backoff, terminal `failed` state | Working, tested with two workers |
+| Exactly-once notification *effect* from at-least-once delivery (unique constraint) | Working, tested under replay |
+| In-app notifications: list, unread count, mark one/all read, team-scoped and self-scoped | Working |
+| Cross-team "My work" (`/me/items`), scoped by the caller's memberships, not a parameter | Working |
+| Needs-attention views: assigned to me, unassigned urgent, awaiting approval — one click, server-filtered | Working |
 | React + TypeScript web application (Vite, TanStack Query, strict types) | Working |
 | Sign-in, team switcher, item list with server-side filters and cursor paging | Working |
-| Item detail: claim, workflow moves, edit, comments, history — all server-confirmed | Working |
+| Item detail: claim, workflow moves, edit, comments, history | Working |
+| Optimistic claim with tested rollback and reconciliation to the server's state | Working, tested |
 | Team activity feed, paged with its own cursor | Working |
 | Loading, empty, error and conflict states on every server-backed view | Working |
-| Backend test suite against real PostgreSQL | Working (186 tests) |
-| Frontend test suite (vitest + React Testing Library) | Working (55 tests) |
+| Backend test suite against real PostgreSQL | Working (229 tests) |
+| Frontend test suite (vitest + React Testing Library) | Working (79 tests) |
+| One-command stack: `docker compose up --build` runs database, API, worker and web | Working, verified end to end |
 | Docker Compose PostgreSQL for reviewers | Working |
 | CI: backend and frontend jobs, formatting, lint, types, migrate, seed, tests, build | Working |
 
 ## Where to look first
 
-The assessment asks for meaningful behaviour beyond CRUD. Five such behaviours are
-implemented and tested. Each row below names the behaviour, the test that proves it, and
-the document that explains the reasoning — so a reviewer can check the claim rather than
-take it on trust.
+The assessment asks for meaningful behaviour beyond CRUD and suggests aiming for four or
+five. Seven are implemented and tested. Each row below names the behaviour, the test that
+proves it, and the document that explains the reasoning — so a reviewer can check the claim
+rather than take it on trust.
 
 | Behaviour | The test that proves it | The reasoning |
 | --- | --- | --- |
@@ -63,6 +109,8 @@ take it on trust.
 | **A retried request cannot create a duplicate** | `tests/test_items_create.py`, `tests/test_comments.py` — the same `Idempotency-Key` twice creates one row and replays the first result; a different payload under the same key returns `409` | [`ENGINEERING_DECISIONS.md`](ENGINEERING_DECISIONS.md) 7 |
 | **Workflow and role rules are enforced on the server** | `tests/test_transitions.py`, `tests/test_authorization.py` — invalid transitions are refused, a viewer cannot write, and another team's item is a `404` | [`ENGINEERING_DECISIONS.md`](ENGINEERING_DECISIONS.md) 8, 11, 12 |
 | **History cannot diverge from the state it describes** | `tests/test_activity_atomicity.py` — the activity insert is broken on purpose and the item mutation rolls back with it | [`ENGINEERING_DECISIONS.md`](ENGINEERING_DECISIONS.md) 9 |
+| **A notification is delivered once, after the change that caused it** | `tests/test_outbox.py` — a broken outbox insert rolls the assignment back; two workers drain one batch with `SKIP LOCKED`; replaying an event cannot create a second notification; retries stop at the attempt limit | [`ENGINEERING_DECISIONS.md`](ENGINEERING_DECISIONS.md) 23 |
+| **An optimistic update is reconciled with the server** | `frontend/src/features/items/ItemDetailPage.test.tsx` — a claim shows immediately, a lost race (`409`) rolls it back and shows the winner, and the next write uses the `ETag` the claim produced | [`ENGINEERING_DECISIONS.md`](ENGINEERING_DECISIONS.md) 24 |
 
 A one-command check of the first four, over real HTTP against the seeded database, is in
 [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) (Phase 4 and Phase 5
@@ -77,15 +125,46 @@ sections) — the scripts are not committed, but the commands and the observed r
 | Migrations | Alembic |
 | Tests | pytest, pytest-asyncio, HTTPX (ASGI transport), real PostgreSQL |
 | Quality | ruff (format + lint), mypy (strict) |
-| Frontend | React + TypeScript (Vite, TanStack Query) — added in a later phase |
+| Frontend | React + TypeScript (Vite, TanStack Query) |
+| Worker | the same image and codebase (`python -m app.worker`), no broker |
 
 ## Prerequisites
 
 - [`uv`](https://docs.astral.sh/uv/) — installs Python 3.12 and the locked dependencies.
 - PostgreSQL 16 — either a local server or the bundled Docker Compose service.
-- Docker (only if you prefer the Compose database).
+- Docker (for the Compose database, or for the one-command stack).
 
-## Setup
+## One command: the whole stack
+
+If Docker is available, this is the shortest path to a running application — database,
+migrations, demo data, API, outbox worker and the web UI:
+
+```bash
+docker compose up --build
+```
+
+Open **http://localhost:8080** and sign in as `lena.lead@newtonite.dev` with
+`Newtonite!2026` (every demo account is listed in step 5). The first build takes a couple of
+minutes; later starts take seconds.
+
+What happens: `db` starts and reports healthy; `api` waits for it, applies migrations,
+seeds the demo data (idempotently) and serves on `:8000`; `worker` starts once the API is
+ready and delivers notifications; `web` serves the built single-page app on `:8080` and
+forwards `/api` to the API. Because the browser talks to one origin, the containerised setup
+needs no CORS permission and no host name baked into the image.
+
+| URL | Purpose |
+| --- | --- |
+| http://localhost:8080 | The web application (through nginx) |
+| http://localhost:8080/healthz | Liveness, through the same origin |
+| http://localhost:8000/docs | OpenAPI UI, directly |
+| http://localhost:5433 | PostgreSQL (host port, for a database client) |
+
+`docker compose down` stops it and keeps the data; `docker compose down -v` also deletes the
+database. The rest of this README describes the development setup, which is what to use if
+you want to run the tests.
+
+## Setup, step by step
 
 ### 1. Configuration
 
@@ -246,13 +325,50 @@ A comment and its `commented` history event are written in one transaction, so a
 cannot exist without the timeline entry that explains it. There is no route that writes an
 event — history is produced by the operations it describes.
 
-### 8. Run the API and the web app
+### 8. Assign work and read the notification
 
-Two terminals, or `make dev-api` and `make dev-web`.
+A notification is delivered **after** the change that caused it, so this also demonstrates
+the outbox. The worker must be running — step 9 starts it, or use `make worker`. Replace
+`<NINA_USER_ID>` with Nina's `user_id` from `/api/v1/teams/<TEAM_ID>/members`.
+
+```bash
+# A lead assigns an item to somebody else. The assignment and the outbox event are written
+# in one transaction; the event is not delivered by this request.
+curl -s -X PATCH "http://localhost:8000/api/v1/items/$ID" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -H 'If-Match: "4"' -d '{"assignee_id":"<NINA_USER_ID>"}'
+
+# A moment later, Nina's own token sees it.
+curl -s "http://localhost:8000/api/v1/notifications" \
+  -H "Authorization: Bearer $NINA_TOKEN"
+curl -s "http://localhost:8000/api/v1/notifications/unread-count" \
+  -H "Authorization: Bearer $NINA_TOKEN"
+
+# Everything assigned to the caller, across every team — the scope comes from the token.
+curl -s "http://localhost:8000/api/v1/me/items?limit=5" \
+  -H "Authorization: Bearer $NINA_TOKEN"
+```
+
+Only three events notify: **assigned**, **approved** and **sent back**. Claiming an item,
+moving it through the ordinary workflow and unassigning do not — the activity feed already
+covers them, and a notification for every status change would be noise. Delivery is
+at-least-once by design; the unique constraint on `notifications.outbox_event_id` is what
+makes the effect exactly-once. See [`docs/API.md`](docs/API.md) and
+[`ENGINEERING_DECISIONS.md`](ENGINEERING_DECISIONS.md) 23.
+
+### 9. Run the API, the worker and the web app
+
+Three processes, or `make dev-api`, `make worker` and `make dev-web`. The API and the web
+app work without the worker; the worker is what turns queued events into notifications.
 
 ```bash
 cd backend
 uv run uvicorn app.main:app --reload --port 8000
+```
+
+```bash
+cd backend
+uv run python -m app.worker      # poll forever; --once drains what is due and exits
 ```
 
 ```bash
@@ -299,7 +415,27 @@ them together, and `make build-web` for the production bundle.
 
 The backend suite runs against `TEST_DATABASE_URL` and applies migrations to head itself, so
 no manual preparation is needed beyond creating the empty `newtonite_test` database. The
-frontend suite needs no database: it stubs `fetch`, so it runs in about four seconds.
+frontend suite needs no database: it stubs `fetch`, so it runs in about two seconds.
+
+Current totals, from the commands above: **229 backend tests** in about 50 s and **79
+frontend tests** in about 2 s. The suites that carry the domain guarantees are worth opening
+first:
+
+| Suite | What it proves |
+| --- | --- |
+| `tests/test_claim.py`, `tests/test_items_concurrency.py` | two concurrent claims, one owner |
+| `tests/test_items_update.py`, `tests/test_transitions.py` | stale versions refused; illegal transitions refused |
+| `tests/test_idempotency.py`, `tests/test_items_create.py` | retries cannot duplicate; payload reuse is rejected |
+| `tests/test_authorization.py`, `tests/test_memberships.py` | cross-team and role boundaries, including the last-admin rule |
+| `tests/test_activity_atomicity.py` | a failed history write rolls the mutation back |
+| `tests/test_outbox.py` | queue-in-transaction, two-worker delivery, replay safety, retry exhaustion |
+| `tests/test_notifications.py` | self-scoped reads, unread counts, acknowledgement, cross-team refusal |
+| `tests/test_index_inventory.py` | the indexes and named constraints the plans depend on actually exist |
+
+The container image is not exercised by those suites, so it was verified separately:
+`docker compose up --build` followed by 26 checks over real HTTP through the nginx origin —
+login, claim, assignment, worker delivery, unread count, acknowledgement, `/me/items`,
+cross-team `404`, stale `412` and the activity feed. All 26 passed.
 
 ## Repository structure
 
@@ -317,17 +453,22 @@ backend/
     db.py             async engine and session management
     errors.py         error types and the HTTP error envelope
     main.py           application factory
+    worker.py         the outbox worker: claim, deliver, retry, give up
   scripts/            the demo seed, maintenance commands and the query-plan tool
   tests/              integration tests against PostgreSQL
+  Dockerfile          the API and worker image (one image, two commands)
+  docker-entrypoint.sh  migrate, optionally seed, then run the command
 frontend/
   src/
     api/              the HTTP client and the response types
     auth/             the in-memory session store, sign-in and sign-out
     components/       the shell and the four view states
-    features/         one directory per view: items, activity
+    features/         one directory per view: items, notifications, activity
     lib/              formatting, error explanations, the router, the role matrix
     query/            the TanStack Query client, its keys and its invalidation helpers
     test/             the fake network, fixtures and render helpers
+  Dockerfile          build the SPA, serve it with nginx
+  nginx.conf          one origin: static files plus /api forwarded to the API
 docker/
   initdb/             creates the test database on first Compose start
 docs/                 architecture, frontend, API, decisions, status and review material
@@ -359,6 +500,9 @@ docs/                 architecture, frontend, API, decisions, status and review 
   `role` or `user_id` in a request body is never trusted — unknown fields are rejected.
 - A resource in a team the caller does not belong to returns `404`, not `403`, so responses
   cannot be used to confirm that another team's data exists.
+- Notifications are scoped to the recipient, not to a team parameter, and the database's
+  composite foreign key keeps a recipient inside the team the notification is about. Reading
+  somebody else's notification is a `404`.
 - The browser holds the session token **in memory only** — never in `localStorage` or
   `sessionStorage`. The cost is real and accepted: a page reload signs you out. Web storage
   is readable by any script on the page, so keeping the token out of it is the only option
@@ -374,11 +518,10 @@ in [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
 In rough priority order, and stated as work rather than wishes:
 
-1. **Give the outbox something to deliver, then build it.** A notification channel — "you were
-   assigned", "your item was approved", "your item was sent back" — as email or a webhook.
-   The transactional outbox is only worth building once something is listening, which is why
-   it was deferred with a design sketch rather than half-built; see the Phase 7 assessment in
-   [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md).
+1. **A second delivery channel for the outbox.** In-app notifications are built and tested;
+   email and a team webhook would reuse the same queue and the same exactly-once constraint,
+   and would need the one thing the in-app channel does not: a retry policy for a provider
+   that is down for hours, and a way to show a permanently failed delivery to an operator.
 2. **Browser-driven end-to-end tests in CI.** Playwright against a seeded database, signing in
    as each role and exercising the claim, approval, comment, conflict and refusal paths. The
    frontend tests stub the network, and the wire format was verified by a script run by hand —
@@ -389,14 +532,18 @@ In rough priority order, and stated as work rather than wishes:
 4. **A member-management screen.** The API is complete and tested — adding, changing and
    removing members, admin only, with the last-admin and assigned-items rules enforced — but the
    interface has no view for it.
-5. **Reopen-after-close**, with an explicit authorization rule, a reason, and a history event.
+5. **Push instead of polling for the unread badge.** The badge refreshes every 20 seconds,
+   which is honest but not instant. Server-sent events would suit it better than a WebSocket —
+   one direction, no framing to invent — and would need the worker to signal the API process,
+   which is the point at which a broker starts to earn its keep.
+6. **Reopen-after-close**, with an explicit authorization rule, a reason, and a history event.
    `CLOSED` is terminal today, which is a deliberate simplification rather than a permanent
    answer.
-6. **Deployment**: a container image for the API, a static host for the built `dist/` with the
-   recommended CSP, and TLS termination in front of both.
-7. **Measure at a larger scale.** The plans are measured at 3 000 items; a bigger seed with
+7. **Deployment**: the images exist and run as one stack, but there is no hosted environment,
+   TLS termination, or the recommended `Content-Security-Policy` in front of them.
+8. **Measure at a larger scale.** The plans are measured at 3 000 items; a bigger seed with
    `EXPLAIN (ANALYZE, BUFFERS)` would show where the current indexes stop being sufficient, and
    would turn "bounded and indexed" into a number.
-8. **Kind-tagged or signed cursors**, if a paginated position ever becomes something a user can
+9. **Kind-tagged or signed cursors**, if a paginated position ever becomes something a user can
    share or edit. Today a cursor is opaque but unsigned, which is correct for a
    server-generated position and would not be for a URL.

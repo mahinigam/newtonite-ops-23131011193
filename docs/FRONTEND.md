@@ -1,7 +1,7 @@
 # Frontend
 
 The React client for the operations API: what it does, how it decides things, and what it
-deliberately does not do. It is a single-page application with three views and no server-side
+deliberately does not do. It is a single-page application with five views and no server-side
 rendering, because the API is the only source of truth and the client's job is to show it.
 
 ```
@@ -10,19 +10,34 @@ frontend/
     api/          the HTTP client and the response types
     auth/         the session store, sign-in and sign-out
     components/   the shell and the four view states
-    features/     one directory per view: items, activity
+    features/     one directory per view: items, notifications, activity
     lib/          formatting, error explanations, the router, the role matrix
     query/        the TanStack Query client, its keys and its invalidation helpers
     test/         the fake network, fixtures and render helpers
 ```
 
-## The three views
+## The views
 
 | Route | View |
 | --- | --- |
-| `#/teams/:teamKey` | The team's work items: filters, search, cursor paging, create |
+| `#/teams/:teamKey` | The team's work items: presets, filters, search, cursor paging, create |
 | `#/teams/:teamKey/items/:itemId` | One item: fields, available moves, discussion, history |
 | `#/teams/:teamKey/activity` | The team's activity feed |
+| `#/my-work` | Everything assigned to the caller, across every team |
+| `#/notifications` | The caller's notifications, with an unread count |
+
+The first three are **team-scoped**: the team key comes from the URL and is checked against the
+caller's own memberships before any request is made. The last two are **person-scoped**: there
+is no team in the path because the scope is the token. That split mirrors the API, where
+`/me/items` and `/notifications` derive their scope from the session rather than from a
+parameter.
+
+Four of the team's "what needs attention?" questions are one click, not a manual filter
+combination: all work, assigned to me, unassigned urgent, and awaiting approval. Each preset
+sets the structured filters that the list already sends to the server, so the resulting request
+is the same one the checkboxes would have produced, over the whole dataset rather than the
+loaded page. The selected preset is derived from the filters, ignoring the search box, so
+typing a search term does not clear the selection.
 
 Routing is a hash router of about sixty lines (`src/lib/router.ts`). It is a pure
 `parseHash` function plus a `useSyncExternalStore` subscription, which means the routing rules
@@ -43,15 +58,26 @@ locally maintained copy, and nothing is filtered or sorted in the browser.
   page I already loaded".
 - **Paging is the server's cursor.** `next_cursor` is handed back verbatim; `has_more` decides
   whether the "Load more" control exists at all.
-- **Mutations are server-confirmed.** No optimistic update is used for claim, approve, close or
-  edit. The request is sent, the server answers, and the answer is what appears. For operations
-  whose entire point is that exactly one caller wins, showing a result before it is known is the
-  wrong trade — a `409` or `412` would have to be rolled back in front of the user.
+- **A claim is optimistic; everything else is server-confirmed.** Clicking *Claim* shows the
+  item as yours immediately, because the change is one field and the likely failure — somebody
+  else got there first — has a clear reconciliation. The provisional state is announced on
+  screen, the transition buttons are disabled while it is in flight, and a `409` restores the
+  snapshot and then re-reads the item, so the page ends up showing the winner rather than the
+  guess. Transitions and edits still wait for the server: an optimistic `awaiting_approval` that
+  came back `412` would show a workflow state that never existed. The rollback is covered by
+  three tests, not assumed.
 - **A successful write is adopted, not re-fetched.** The mutation's response *is* the new state,
   so it goes into the item's cache entry directly. That entry holds the item **and its `ETag`**
   together, so the version a conditional write is conditioned on is always the version of the
-  item it is writing to. A refused write (`409`, `412`) re-reads the item instead, because the
-  local copy is then known to be stale.
+  item it is writing to. This includes the `ETag` a **claim** returns: claiming bumps the
+  version, and discarding that header is what would make the next transition fail with `412`.
+  A refused write (`409`, `412`) re-reads the item instead, because the local copy is then known
+  to be stale.
+- **Notifications are polled, not pushed.** The unread badge asks for one indexed count every
+  20 seconds. Delivery is asynchronous, so the badge can lag the change by a moment; the
+  notification page says so rather than implying a live feed. There is no WebSocket, which the
+  brief rules out, and no server-sent events, which would need the worker to signal the API
+  process.
 - **A `401` from any request ends the session.** Handled once, in the query cache's `onError`,
   so an expired token returns the user to the sign-in screen rather than leaving a page showing
   an error it can never recover from.
@@ -112,7 +138,7 @@ is prose.
 
 ## Tests
 
-`npm run test` runs 55 tests in seven files. They render real components against a real
+`npm run test` runs 79 tests in nine files. They render real components against a real
 TanStack Query client and a **stubbed `fetch`** (`src/test/fetch.ts`) rather than mocking the API
 module, so the error envelope, the `ETag` header and the query parameters are all covered. Every
 request is recorded, which is how the tests assert on what the *server* was asked for: that a
@@ -125,8 +151,10 @@ reused its key.
 | `lib/router.test.ts` | Route parsing, including the shapes that must be refused |
 | `lib/errors.test.ts` | Conflict wording, and that a role refusal does not promise a reload |
 | `auth/LoginPage.test.tsx` | Refusal wording, session installation, the demo-account buttons |
-| `features/items/ItemListPage.test.tsx` | Loading, empty, error and retry; filters as server queries; cursor paging |
-| `features/items/ItemDetailPage.test.tsx` | The role boundary, server-confirmed claim, `409` and `412` handling, `If-Match` |
+| `features/items/ItemListPage.test.tsx` | Loading, empty, error and retry; filters and presets as server queries; cursor paging |
+| `features/items/MyWorkPage.test.tsx` | The cross-team scope, no `assignee` parameter, per-row team links, presets, paging |
+| `features/items/ItemDetailPage.test.tsx` | The role boundary; optimistic claim, its rollback and its `ETag`; `412` handling |
+| `features/notifications/NotificationsPage.test.tsx` | The list, the unread count, acknowledging one and all, a failed acknowledgement, scoping |
 | `features/items/CommentThread.test.tsx` | Idempotency-key reuse across a retry, length limits, viewer read-only |
 
 What the frontend tests do **not** prove is the wire format — they stub the network. That is
@@ -137,7 +165,12 @@ Phase 6 section of `IMPLEMENTATION_STATUS.md`.
 
 - **A page reload signs the user out.** Deliberate: the token is in memory only. See
   `SECURITY.md`.
-- **No optimistic updates anywhere.** Chosen, not missing.
+- **Optimistic updates only for the claim.** Deliberate; see decision 24. Edits and transitions
+  wait for the server.
+- **The selected preset is not in the URL.** A reload returns to "all work". Making a view
+  shareable needs query-string routing, which is not built.
+- **The unread badge can be up to 20 seconds stale.** That is the poll interval, and it is a
+  deliberate alternative to a push channel.
 - **No member-management UI.** The API supports it (admin only); the interface does not, because
   the vertical slice is about work items.
 - **No offline support and no service worker.** The API is authoritative; a cached page would be

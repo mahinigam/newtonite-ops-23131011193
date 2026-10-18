@@ -823,7 +823,7 @@ HTTP, and `docs/DATA_MODEL.md` records the plan for each of the four lists.
 
 ---
 
-## 19. The interface holds server state, and contested writes are server-confirmed
+## 19. The interface holds server state, and adoption beats re-fetching
 
 **Context.** The frontend has to display work items, let people claim them, move them through
 the workflow and edit them. TanStack Query makes optimistic updates easy, and the brief asks
@@ -834,19 +834,22 @@ client "refresh/reconcile rather than forcing stale local data onto the server".
 
 1. Optimistic updates everywhere: apply the change locally, send it, roll back on failure.
 2. No local state at all beyond the query cache; every write waits for the server.
-3. Optimistic for low-risk edits, server-confirmed for claim, approve and close.
+3. Optimistic only where the changed state is small and the rollback is unambiguous;
+   server-confirmed everywhere else.
 
-**Choice.** Option 3, but read strictly: **claim, transitions and edits are all
-server-confirmed.** Nothing on an item is optimistically updated. (Option 3's "low-risk" case
-turned out to have no members — see below.)
+**Choice.** Option 3. When this was first written, that meant **every** item write was
+server-confirmed, because no case passed the test in option 3. **Decision 24 revisits the
+claim**, which now updates optimistically with a tested rollback; transitions and edits remain
+server-confirmed. The reasoning below is why they do.
 
-**Why.** Option 1 is a correctness problem before it is a taste problem. Claim and approval are
-operations whose *entire point* is that exactly one caller wins: a claim that optimistically
-succeeds and then comes back `409` must be visibly undone in front of the user, and a transition
+**Why.** Option 1 is a correctness problem before it is a taste problem. Approval and closure
+are operations whose *entire point* is that a controlled state is being entered: a transition
 that optimistically advances the status and then comes back `412` shows a workflow state that
-never existed on the server. That is worse than a button that waits, because it teaches the user
-to distrust the screen. Option 2 would be over-correction for a form: a title edit is not
-contested by anybody, so waiting for a round trip costs nothing and is what the code does anyway.
+never existed on the server. That is worse than a button that waits, because it teaches the
+user to distrust the screen. A claim is the one case where the rollback is a single field and
+the losing path has a clear explanation — which is exactly the test decision 24 applies.
+Option 2 would be over-correction for a form: a title edit is not contested by anybody, so
+waiting for a round trip costs nothing and is what the code does anyway.
 
 Two related choices follow from this and are worth stating, because they are what make
 "server-confirmed" cheap rather than sluggish:
@@ -870,10 +873,11 @@ which is the opposite of forcing stale local data onto the server.
 - Accepted: more cache plumbing — `putItem`, `refreshItem` and `invalidateItemViews` rather than
   one `invalidateQueries` call — because the two cases genuinely differ.
 
-**Consequences and verification.** `ItemDetailPage.test.tsx` asserts that a claim shows the
-assignee and the version **from the claim response** (and that no second read was needed), that
-a `409` is explained as "already taken" and re-reads the item, and that a `412` says the change
-"was not applied" and offers a reload. `ItemListPage.test.tsx` asserts that a filter change is a
+**Consequences and verification.** `ItemDetailPage.test.tsx` asserts that a transition adopts
+the version **from the response** (and that no second read was needed), that a `412` says the
+change "was not applied" and offers a reload, that a viewer is offered no moves, and — since
+decision 24 — that an optimistic claim is provisional, rolls back on `409`, and hands the next
+write the version the claim produced. `ItemListPage.test.tsx` asserts that a filter change is a
 new server query rather than a filter over loaded rows.
 
 ---
@@ -976,7 +980,7 @@ retrying unsafe.
 
 ## 22. A hand-written router, and a deliberately small dependency list
 
-**Context.** The application has three views, one of which is nested inside another
+**Context.** The application has five views, one of which is nested inside another
 (`#/teams/:teamKey/items/:itemId`), and no server-side rendering.
 
 **Options considered.**
@@ -988,7 +992,7 @@ retrying unsafe.
 **Choice.** Option 2.
 
 **Why.** A router library earns its place through data loaders, nested layouts, redirects and
-route-level code splitting. This application has none of those: there are three views, one
+route-level code splitting. This application has none of those: there are five views, one
 nested route, and the data is fetched by TanStack Query from the item id in the URL. What is
 left is "parse the hash and subscribe to changes", which is a pure function plus
 `useSyncExternalStore` — and being a pure function, `parseHash` is tested directly, including the
@@ -1011,10 +1015,260 @@ server rewrite rule, so the built `dist/` is servable by any static file server.
 - Accepted: the dependency list stays at React, React DOM and TanStack Query at runtime. Every
   other package is a build or test tool.
 
-**Consequences and verification.** `lib/router.test.ts` covers the two real routes, the landing
-hash, a non-UUID item id, a truncated path and a path with a trailing segment. `App.tsx` looks
+**Consequences and verification.** `lib/router.test.ts` covers every real route (including the
+two person-scoped ones), the landing hash, a non-UUID item id, a truncated path and a path with
+a trailing segment. `App.tsx` looks
 the team key up in the caller's own memberships and shows "that team is not one of yours" rather
 than an empty list, because the server would refuse every request for it anyway.
+
+---
+
+## 23. The outbox is a table, and the worker is a separate process
+
+**Context.** Three moments need to reach a person other than the actor: an item assigned to
+them, an item they own approved, and an item they own sent back. The write that causes each
+one must not depend on the notification being delivered, and the notification must not be
+lost if the process handling the write is restarted a second later.
+
+**Options considered.**
+
+1. Insert the notification inline, in the same request. Simplest, and it cannot be lost — but
+   it couples an operational write to a delivery write, and a failure to notify fails the
+   assignment.
+2. Insert it after the response with `BackgroundTasks`. No separate process, and no new
+   infrastructure. It also dies with the process: a deploy in the wrong second silently
+   loses the notification, and nothing records that it was owed.
+3. A transactional outbox table, drained by a separate worker process.
+4. A broker (Redis, RabbitMQ, Celery).
+
+**Choice.** Option 3.
+
+**Why.** The first half of the design is a single transaction: the state change, its activity
+event and the outbox row commit together or not at all. That is what makes "the assignment
+happened but nobody will ever be told" impossible — the same guarantee the history already
+had, extended to delivery. The second half is a process boundary: the API does not deliver,
+so a slow or broken notification cannot slow a request, and restarting the API does not stop
+delivery.
+
+Option 4 was rejected because the queue already lives in a database that has row locking and
+`FOR UPDATE SKIP LOCKED`. A broker would add a second place where the truth lives, a second
+thing to run, and a failure mode where the database and the queue disagree. `SKIP LOCKED` is
+exactly the primitive a work queue needs, and it is already here.
+
+**At-least-once, and why the effect is still exactly-once.** A worker can claim a batch, do
+the work, and crash before committing; the next poll sees the rows again. Rather than pretend
+otherwise, delivery is at-least-once and the *handler* is made idempotent by the database:
+`notifications.outbox_event_id` is unique, and the insert is `ON CONFLICT DO NOTHING`.
+Replaying an event therefore cannot create a second notification, and a handler that forgets
+to check is still safe. "Exactly-once delivery" is not claimed, because it is not true;
+"exactly-once effect" is, and a test proves it.
+
+**Retries and giving up.** A failed event records its error, increments `attempts`, and is
+rescheduled with a bounded backoff (2, 4, 8, 16, 32, capped at 60 seconds). At
+`OUTBOX_MAX_ATTEMPTS` (default 5) it becomes `failed`, which is terminal and visible: the
+operator summary counts failed events, and the worker logs the last error at `ERROR`. A
+poison message therefore stops being retried without disappearing.
+
+**Trade-offs.**
+
+- Accepted: one more process to run. It is a Compose service, a `make worker` target and one
+  paragraph in the README, which is the smallest honest cost.
+- Accepted: delivery lags the write by up to the poll interval plus processing (about a
+  second locally). The notification view says so instead of implying a live feed.
+- Accepted: only three event types notify. A notification per status change would make the
+  inbox the noisiest view in the product, and the activity feed already covers the rest. This
+  is a product judgement, recorded here so it is not mistaken for an omission.
+- Rejected: exactly-once delivery. It would need a distributed transaction between the
+  database and the delivery target.
+
+**Consequences and verification.** `tests/test_outbox.py` covers: an assignment and its event
+committing together; a deliberately broken outbox insert rolling the assignment back; a
+delivered notification; replaying an event producing no second row; a departed recipient; two
+workers draining one batch without either blocking or double-delivering; retry exhaustion
+marking the event `failed`; and a malformed payload failing observably rather than silently.
+`tests/test_notifications.py` covers the read side and the team boundary.
+
+---
+
+## 24. Optimistic UI, only where the rollback is unambiguous
+
+**Context.** The interface was server-confirmed everywhere: click, wait, then show. That is
+right for a workflow transition and wrong for a claim, where the expected latency is on the
+critical path of a race and the losing case has a clear, useful explanation.
+
+**Options considered.**
+
+1. Server-confirmed everywhere.
+2. Optimistic everywhere, with rollback helpers shared by all writes.
+3. Optimistic where the state changed is one field and the failure has an obvious
+   reconciliation; server-confirmed for everything that changes what the item *is*.
+
+**Choice.** Option 3, applied to the claim only.
+
+**Why.** A claim changes exactly one field — the assignee — and the server's answer is either
+"yours" or "somebody else's". Showing it immediately is honest as long as the interface says
+it is provisional and the losing path replaces the guess with the server's truth. A status
+transition is the opposite: `awaiting_approval` that never happened is a workflow state a
+person could act on, and approval is the operation the product exists to control. Waiting for
+the response there costs one round trip and removes a class of lie.
+
+**Mechanics.** `cancelQueries` for the item, then a snapshot, then `setQueryData` with the
+caller as assignee. On success the response body *and its `ETag`* are put back into the same
+cache entry; on failure the snapshot is restored, the item is re-read from the server, and the
+dependent lists are invalidated. While the mutation is pending, the provisional state is
+announced and the transition buttons are disabled, so a stale `available_transitions` cannot
+be acted on.
+
+Writing this found a real bug: the claim response carries a **new** `ETag` because claiming
+bumps the version, and the client was discarding it. The next transition therefore sent the
+pre-claim version and was refused with `412`. The fix is part of this change and is covered by
+a test that fails without it.
+
+**Trade-offs.**
+
+- Accepted: a visible flicker on the losing path — the row shows the claimant as owner and
+  then corrects to the winner. The alternative is a slower success for the common case, and
+  the flicker is accompanied by an explanation rather than a silent change.
+- Accepted: a write path that is harder to read than the server-confirmed one. It is confined
+  to one mutation and documented at the call site.
+- Rejected: a generic optimistic-update helper. With one call site it would be an abstraction
+  with no second user.
+
+**Consequences and verification.** `ItemDetailPage.test.tsx` holds the claim response open and
+asserts the provisional owner and the "until the server confirms" notice; resolves it with a
+`409` and asserts the row rolls back to the winner and the alert explains it; and asserts the
+next conditional write carries the `ETag` the claim returned. The last test was run against the
+old client to confirm it fails there.
+
+---
+
+## 25. The unread badge polls, and says so
+
+**Context.** Notifications are delivered by a worker process, so the browser cannot know the
+moment one arrives. The badge still has to be roughly right.
+
+**Options considered.**
+
+1. WebSockets.
+2. Server-sent events.
+3. Polling an indexed `COUNT` every 20 seconds.
+
+**Choice.** Option 3.
+
+**Why.** The assessment explicitly rules out WebSockets, and they are the wrong shape anyway:
+the traffic is one number, one direction, every so often. Server-sent events would fit, but the
+producer is a **different process** from the API, so making it push would require the worker to
+signal the API process — `LISTEN/NOTIFY`, or a broker. That is a real feature, not a small one,
+and it belongs with the deployment work rather than ahead of it.
+
+Polling needs nothing new: the count is one indexed query (`ix_notifications_recipient_unread`
+is partial, so it only covers rows that can be unread), the query key is separate from the list
+so other pages do not fetch notifications to render a number, and a 20-second delay on a badge
+is not a correctness problem. The notification page states that delivery is asynchronous, so
+the lag is visible rather than mysterious.
+
+**Trade-offs.**
+
+- Accepted: up to 20 seconds of staleness, and one request per open tab per interval.
+- Accepted: a small amount of avoidable traffic on a page nobody is looking at. TanStack Query
+  stops the interval when the tab is in the background by default.
+- Rejected for now: SSE. It is the natural next step and is written down as such in the
+  README's "next week" list, rather than half-built.
+
+**Consequences and verification.** `useUnreadCount` is one hook with one query key;
+`NotificationsPage.test.tsx` asserts the badge and the list can disagree only if the server
+says so (both are re-read after an acknowledgement). The partial index is asserted by
+`tests/test_index_inventory.py`.
+
+---
+
+## 26. Saved views are server filters, not a client-side pass
+
+**Context.** The brief names three operational questions — assigned to me, unassigned urgent,
+awaiting approval. They have to work over the whole dataset, not over whatever page happens to
+be loaded.
+
+**Options considered.**
+
+1. Filter the loaded rows in the browser.
+2. A preset button that sets the existing structured filters, which the list already sends to
+   the server.
+3. Dedicated endpoints per view.
+
+**Choice.** Option 2.
+
+**Why.** The list endpoint already filters, searches and pages on the server, and its cursor is
+defined over the filtered set. A preset is therefore a *value*, not a code path: one click sets
+the same state the checkboxes set, and the request that follows is the request the user could
+have built by hand. Option 1 would answer the wrong question — "of the 25 rows you have, which
+are urgent?" — and option 3 would duplicate paging, filtering and authorization for no new
+capability.
+
+The "unassigned urgent" preset is the one that proves the point: it sets `assignee=none`,
+`status=open` and `priority=high,urgent` together, which is exactly the shape the partial index
+`ix_work_items_unassigned_urgent` exists for. A client-side version would never exercise it.
+
+**Trade-offs.**
+
+- Accepted: the selected preset is component state, so a reload returns to "all work". Making
+  it a URL parameter would make the view shareable and is the obvious next step; it also means
+  the router grows query-string handling, which is deliberately absent today.
+- Accepted: four preset buttons and a filter bar can describe the same state. The active preset
+  is derived from the structured filters (search is excluded), so the highlight cannot drift
+  from what is actually being requested.
+
+**Consequences and verification.** `ItemListPage.test.tsx` asserts each preset becomes the
+expected query parameters, that "all work" returns to an unfiltered request, and that typing a
+search term does not clear the selected preset. `MyWorkPage.test.tsx` asserts the cross-team
+view sends no `assignee` parameter at all.
+
+---
+
+## 27. One command runs the whole stack
+
+**Context.** A reviewer should be able to see the application without reading a setup guide,
+and the project now has four moving parts: the database, the API, the worker and the web app.
+
+**Options considered.**
+
+1. Documentation only: four terminals and a list of commands.
+2. Development scripts that start four processes on the host.
+3. A Compose file with four services and two images.
+
+**Choice.** Option 3, with the step-by-step path kept for anyone who wants to run the tests or
+the dev server.
+
+**Why.** One command that cannot half-succeed is worth more to a reviewer than a shorter
+document. Compose also expresses the startup order the system actually needs: the database must
+be healthy before migrations, the API must be ready before the worker claims rows, and the web
+container only needs the API to exist. Those are dependencies, not an arbitrary sequence.
+
+The web container serves the built SPA and forwards `/api` to the API container, so the browser
+uses **one origin**. That removes CORS from the deployment entirely and means the image has no
+host name baked into it: `VITE_API_BASE_URL` is built as an empty string, which the client reads
+as "same origin". A reviewer running it on a laptop and a deployment behind a proxy configure
+the same thing.
+
+Migrations run in the entrypoint rather than at application startup. A web process that creates
+tables as a side effect of booting is the anti-pattern this project keeps out of the request
+path; making the step explicit also lets the healthcheck wait for it.
+
+**Trade-offs.**
+
+- Accepted: the images must be built, which needs Docker and a couple of minutes the first time.
+- Accepted: no hot reload inside the containers. This is the *review* path, not the development
+  path; step 9 of the README is the development path.
+- Accepted: development-grade configuration — a published database port and the documented demo
+  password. It is explicitly not a production deployment, and the README says so.
+- Accepted: the worker shares the API image and differs only in its command. Two images would
+  duplicate the build for no benefit.
+
+**Consequences and verification.** `docker compose up --build` was run, and 26 checks were made
+over real HTTP through the nginx origin: the proxied health endpoints, login, claim (including
+the new `ETag`), assignment, worker delivery, the notification list and unread count,
+acknowledgement, `/me/items`, a cross-team `404`, a stale `412`, and the activity feed. All 26
+passed. The exact commands and results are in
+[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md).
 
 ---
 
@@ -1024,6 +1278,7 @@ Listed so the direction is explicit without implying that the behaviour exists.
 
 | Decision | Direction | Implemented in |
 | --- | --- | --- |
-| Async notifications | PostgreSQL-backed transactional outbox with a `SKIP LOCKED` worker, bounded backoff, idempotent handling. Conditional on the core slice passing its gates first | Phase 7, not yet started |
-| Deliberately not built | Email, attachments, SSO, WebSockets, mobile, comment editing, reopen-after-close, rate limiting, member-management UI | See `docs/KNOWN_LIMITATIONS.md` |
+| Outbox delivery over email or a webhook | Reuse the same queue, event types and exactly-once constraint; add a provider retry policy and an operator view of permanently failed deliveries | The in-app channel is complete; the second channel is not started |
+| Push instead of polling | Server-sent events, with the worker signalling the API process through `LISTEN/NOTIFY` | The badge polls; see decision 25 |
+| Deliberately not built | Attachments, SSO, WebSockets, mobile, comment editing, reopen-after-close, rate limiting, member-management UI | See `docs/KNOWN_LIMITATIONS.md` |
 

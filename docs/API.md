@@ -208,7 +208,7 @@ collide, and a reused key returns **that caller's** original item. See
 | --- | --- |
 | `status` | `open`, `in_progress`, `awaiting_approval`, `resolved`, `closed`. **Repeatable** |
 | `priority` | `low`, `medium`, `high`, `urgent`. Repeatable |
-| `type` | `task`, `bug`, `incident`, `payment`, `request`. Repeatable |
+| `type` | `incident`, `customer_issue`, `payment`, `compliance`, `task`. Repeatable |
 | `assignee` | `me`, `none`, or a user id |
 | `q` | Full-text search over title and description (max 200 characters) |
 | `limit` | 1–100, default 25 |
@@ -239,6 +239,29 @@ request, so a tampered cursor cannot reach another team's data. A malformed curs
 | Malformed `cursor` | `422 validation_failed` |
 | `assignee` neither `me`, `none` nor a UUID | `422 validation_failed` |
 | Not a member of the team | `404 not_found` |
+
+### `GET /me/items` — everything assigned to the caller
+
+The same filters and the same keyset cursor, without a team in the path. The scope is the
+caller's own assignments across **every** team they belong to, derived from the token and
+from stored memberships rather than from anything the client sends.
+
+| Parameter | Meaning |
+| --- | --- |
+| `status`, `priority`, `type`, `q` | As above |
+| `limit`, `cursor` | As above |
+
+There is deliberately **no `assignee` parameter**. It would turn a personal view into a
+general cross-team list and widen what one token can read; the answer to "who is this for"
+is the token, not a query string. An item appears only while the caller is still a member of
+its team, so leaving a team removes its work from the view immediately.
+
+```json
+{ "items": [ … ], "next_cursor": null, "has_more": false, "limit": 25 }
+```
+
+This is what the **My work** view calls. The team list remains the right endpoint for "what
+is happening in this team"; this one answers "what is on my plate".
 
 ### `GET /items/{item_id}`
 
@@ -461,6 +484,70 @@ cursor issued for one list is rejected by another with `422 validation_failed` r
 being silently reused as a meaningless position. `has_more` answers "is there another page?"
 without a second request, and `limit` is echoed so a client can tell a short page from a
 clamped one.
+
+## Notifications
+
+Notifications are delivered by the outbox worker **after** the mutation that caused them.
+They are addressed to a person, so there is no team in the path; the team boundary is
+enforced by the composite foreign key on the row and by the read query.
+
+| Method and path | Purpose |
+| --- | --- |
+| `GET /notifications` | The caller's notifications, newest first, keyset-paged (`limit`, `cursor`) |
+| `GET /notifications/unread-count` | `{"unread": 3}` — one indexed count, for the badge |
+| `POST /notifications/{notification_id}/read` | Mark one read. `204`. Idempotent |
+| `POST /notifications/read-all` | `{"marked": 2}` — how many rows actually changed |
+
+```json
+{
+  "id": "0192f0c4-6b1a-7c3d-9e4f-8a7b6c5d4e3f",
+  "team_id": "37c42433-0bf7-5c3f-9716-69bfa9124f95",
+  "work_item_id": "6f1d0b7e-2a4c-4d55-9a0e-1b2c3d4e5f60",
+  "event_type": "work_item_assigned",
+  "body": "Lena Fischer assigned you “Refund the duplicate charge”.",
+  "created_at": "2026-10-18T09:15:02Z",
+  "read_at": null
+}
+```
+
+* `event_type` is one of `work_item_assigned`, `work_item_approved`,
+  `work_item_rejected`. Those are the three moments with an obvious recipient; claims,
+  comments and ordinary status moves are covered by the activity feed instead.
+* Reading somebody else's notification is `404`, not `403`: an id that is not yours is
+  indistinguishable from one that was never issued.
+* `read_at` records when the row was **first** read. Marking an already-read notification
+  read again succeeds and does not rewrite the timestamp, so a retry cannot change history.
+* Leaving a team deletes the notifications addressed to you about it (the composite foreign
+  key cascades). Notifications are delivery state, not history; history lives in
+  `activity_events`, which is append-only.
+* `team_id` is stored on the row so the client can link back to the item without a second
+  lookup. If the caller's session no longer includes that team, the row is shown without a
+  link rather than with a broken one.
+
+Notifications are **not** part of any item response. Reading a team's work never implies
+reading the delivery records about it, and each list has its own cursor.
+
+### `GET /ops/outbox` — team admin only
+
+Delivery counts for the teams the caller administers. It exists because asynchronous
+delivery introduces a failure mode a synchronous version would not have: an event can be
+queued and never delivered. Making it visible is what keeps that acceptable.
+
+```json
+{
+  "teams": [
+    { "team_id": "…", "team_key": "platform", "pending": 0, "delivered": 12, "failed": 0 }
+  ],
+  "pending": 0,
+  "delivered": 12,
+  "failed": 0
+}
+```
+
+`failed` is the number that matters: it is the only terminal state, so a non-zero value means
+an event exhausted its attempts and nothing else will happen to it. Every other row will be
+retried. A caller who is not an admin of any team gets `403`; the response carries counts
+only — no titles, recipients or payloads.
 
 ## Roles
 
