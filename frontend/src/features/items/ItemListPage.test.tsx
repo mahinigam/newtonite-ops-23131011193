@@ -3,8 +3,9 @@
  *
  * The behaviours worth testing here are the ones the brief asks a reviewer to check:
  * loading, empty and error states are all present, the error state offers a retry that
- * actually re-requests, and a filter change produces a *server* query with the filter as a
- * parameter rather than filtering a loaded page.
+ * actually re-requests, a filter change produces a *server* query with the filter as a
+ * parameter rather than filtering a loaded page, and the "what needs attention?" presets
+ * are one click that produces that same kind of server query.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -149,5 +150,80 @@ describe('ItemListPage', () => {
 
     const loose = screen.getByText('Loose one')
     expect(within(loose.closest('li') as HTMLElement).getByText('Unassigned')).toBeInTheDocument()
+  })
+})
+
+describe('ItemListPage — needs-attention presets', () => {
+  it('turns "Assigned to me" into one server query', async () => {
+    const calls = installFetch(() => jsonResponse(page([summary()])))
+    const user = userEvent.setup()
+
+    render()
+    await screen.findByText('Refund the duplicate charge')
+
+    await user.click(screen.getByRole('button', { name: 'Assigned to me' }))
+
+    await waitFor(() => expect(calls.at(-1)?.searchParams.get('assignee')).toBe('me'))
+    // The preset is a view, and the interface says which view is showing.
+    expect(screen.getByRole('button', { name: 'Assigned to me' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+  })
+
+  it('turns "Unassigned urgent" into status, priority and assignee filters', async () => {
+    const calls = installFetch(() => jsonResponse(page([summary()])))
+    const user = userEvent.setup()
+
+    render()
+    await screen.findByText('Refund the duplicate charge')
+
+    await user.click(screen.getByRole('button', { name: 'Unassigned urgent' }))
+
+    await waitFor(() => {
+      const last = calls.at(-1)
+      expect(last?.searchParams.getAll('status')).toEqual(['open'])
+      expect(last?.searchParams.getAll('priority').sort()).toEqual(['high', 'urgent'])
+      expect(last?.searchParams.get('assignee')).toBe('none')
+    })
+  })
+
+  it('returns to everything in one click, and the server sees no filter', async () => {
+    const calls = installFetch(() => jsonResponse(page([summary()])))
+    const user = userEvent.setup()
+
+    render()
+    await screen.findByText('Refund the duplicate charge')
+
+    await user.click(screen.getByRole('button', { name: 'Awaiting approval' }))
+    await waitFor(() =>
+      expect(calls.at(-1)?.searchParams.getAll('status')).toEqual(['awaiting_approval']),
+    )
+
+    await user.click(screen.getByRole('button', { name: 'All work' }))
+    await waitFor(() => expect(calls.at(-1)?.searchParams.has('status')).toBe(false))
+    expect(screen.getByRole('button', { name: 'All work' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('keeps the preset selected while a search term is typed', async () => {
+    const calls = installFetch(() => jsonResponse(page([summary()])))
+    const user = userEvent.setup()
+
+    render()
+    await screen.findByText('Refund the duplicate charge')
+
+    await user.click(screen.getByRole('button', { name: 'Assigned to me' }))
+    await waitFor(() => expect(calls.at(-1)?.searchParams.get('assignee')).toBe('me'))
+
+    await user.type(screen.getByRole('searchbox'), 'refund')
+
+    // The search term is not part of a preset, so the preset does not flicker off.
+    await waitFor(() => expect(calls.at(-1)?.searchParams.get('q')).toBe('refund'))
+    expect(screen.getByRole('button', { name: 'Assigned to me' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    // ...and the two filters travel together.
+    expect(calls.at(-1)?.searchParams.get('assignee')).toBe('me')
   })
 })

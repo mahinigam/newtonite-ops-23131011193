@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     # Comma-separated list of browser origins allowed to call the API.
     cors_allowed_origins: str = Field(default="http://localhost:5173")
 
+    # Outbox worker. The queue is a PostgreSQL table, not a broker, so these are the only
+    # knobs: how much to take at once, how often to look when idle, and when to give up.
+    outbox_batch_size: int = Field(default=20, ge=1, le=1000)
+    outbox_poll_interval_seconds: float = Field(default=1.0, ge=0.05, le=60)
+    outbox_max_attempts: int = Field(default=5, ge=1, le=100)
+
     log_level: str = Field(default="INFO")
 
     @property

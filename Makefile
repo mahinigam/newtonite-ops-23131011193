@@ -7,8 +7,8 @@ BACKEND := backend
 FRONTEND := frontend
 
 .PHONY: help setup setup-api setup-web db-up db-down migrate seed \
-	dev-api dev-web test test-api test-web lint lint-api lint-web \
-	typecheck typecheck-api typecheck-web build-web check
+	dev-api dev-web worker worker-once test test-api test-web lint lint-api lint-web \
+	typecheck typecheck-api typecheck-web build-web stack-up stack-down check
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -40,6 +40,18 @@ dev-api: ## Run the API with autoreload on http://localhost:8000
 dev-web: ## Run the frontend dev server on http://localhost:5173
 	cd $(FRONTEND) && npm run dev
 
+worker: ## Deliver queued notifications, polling until stopped
+	cd $(BACKEND) && uv run python -m app.worker
+
+worker-once: ## Deliver the notifications that are due now, then exit
+	cd $(BACKEND) && uv run python -m app.worker --once
+
+stack-up: ## Build and run the whole stack (db + api + worker + web) in Docker
+	docker compose up --build
+
+stack-down: ## Stop the whole Docker stack
+	docker compose down
+
 test: test-api test-web ## Run every test suite
 
 test-api: ## Run the backend test suite against PostgreSQL
@@ -67,4 +79,4 @@ typecheck-web: ## Static type check the frontend
 build-web: ## Build the frontend for production (into frontend/dist)
 	cd $(FRONTEND) && npm run build
 
-check: lint typecheck test ## Run every quality gate
+check: lint typecheck test build-web ## Run every quality gate, including the production build

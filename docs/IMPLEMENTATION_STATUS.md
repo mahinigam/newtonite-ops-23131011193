@@ -3,8 +3,9 @@
 A truthful, phase-by-phase record. "Verified" means the listed command was run and its
 result observed in this repository — not that the code looks correct.
 
-**Branch:** `feature/newtonite-operations-platform`, merged to `main`
-**Last updated:** 2026-10-17 (end of Phase 8)
+**Branch:** `feature/newtonite-operations-platform`, merged to `main`; Phase 7–8 work on
+`feature/outbox-notifications`
+**Last updated:** 2026-10-18 (end of Phase 8)
 
 ## Phase summary
 
@@ -17,8 +18,8 @@ result observed in this repository — not that the code looks correct.
 | 4 | Work-item API and the five critical correctness behaviours | Complete | See below |
 | 5 | Comments API and activity history API | Complete | See below |
 | 6 | Frontend vertical slice | Complete | See below |
-| 7 | Transactional outbox and worker (conditional) | **Deferred** — gate assessed, recommendation recorded | See "Phase 7 assessment" below |
-| 8 | Final quality, documentation and reviewer readiness | Complete | See below |
+| 7 | Transactional outbox, worker, notifications and `/me/items` | Complete | 229 backend and 79 frontend tests; see below |
+| 8 | Documentation, the container stack and reviewer readiness | Complete | `make check`, `docker compose up --build`, 26/26 HTTP checks; see below |
 
 ## Phase 0 — Reconnaissance and design
 
@@ -662,116 +663,111 @@ ordinary row.
 
 **Known defects.** None known.
 
-## Phase 7 assessment — transactional outbox and worker
+## Phase 7 — Transactional outbox, worker and notifications
 
-**This phase was deliberately not built.** The plan made it conditional: implement it only
-after the critical correctness tests and the complete frontend vertical slice pass. Both
-conditions are now met, so the gate is open — and the recommendation is still to defer. The
-reasoning is recorded here because a deferral is a decision, and an unrecorded one looks like
-an omission.
+**Requirements.** The phase was conditional on the critical correctness tests and the
+frontend vertical slice passing. Both did (Phase 4–6), so the gate opened. The Phase 7
+assessment that stood here before concluded that an outbox with **no consumer** would be
+infrastructure with nothing to do — and that was right at the time. This phase supplies the
+consumer: in-app notifications for the three moments that have an obvious recipient.
 
-**Recommendation: defer.** Not because there was no time, but because there is nothing for it
-to do.
+**What was built.**
 
-**The brief does not ask for it.** The behaviours the assessment names as valuable beyond CRUD
-are "concurrent usage, authorization, workflow enforcement, reliable history, stale updates,
-duplicate-request handling, server-side filtering/pagination, tests". All of them are
-implemented and tested (see the Phase 4 and 5 sections). An outbox is not among them. The brief
-says idempotency records and an outbox "may be included **when their behaviours are actually
-implemented**" — and the operative word is *actually*. A message with no recipient has no
-behaviour to demonstrate.
-
-**There is no consumer, and that is by design.** An outbox exists to make an asynchronous side
-effect atomic with the state change that caused it — a notification, a webhook, a projection.
-This project deliberately excludes email, webhooks and WebSockets (scope discipline, recorded in
-`ENGINEERING_DECISIONS.md`). With no side effect to perform, the worker would deliver messages to
-itself and log the result. That is infrastructure with no concrete requirement behind it, which
-`AGENTS.md` explicitly warns against.
-
-**It would be the only unverified component.** `AGENTS.md` requires that if a worker exists,
-"duplicate processing is harmless and retry exhaustion is observable" — both tested. Done
-properly that means a `SKIP LOCKED` claim loop, bounded backoff, a retry cap, poison-message
-handling, graceful shutdown, and tests for each. Done partially, it would be the one part of the
-system that is neither complete nor verified, added days before submission. The system is
-currently green end to end (186 backend tests, 55 frontend tests, clean lint and types, green
-CI, measured query plans); the downside of deferring is a documented gap, and the downside of a
-rushed implementation is a broken component in a submission whose whole value is correctness.
-
-**What it would take, so the deferral is a design decision rather than a shrug.**
-
-- A table `outbox_events(id BIGSERIAL, event_type, aggregate_type, aggregate_id, payload JSONB,
-  created_at, available_at, attempts INT NOT NULL DEFAULT 0, claimed_at, claimed_by,
-  delivered_at, last_error)`.
-- Rows written **in the same transaction as the mutation that produces them** — the same pattern
-  the activity events already use, so the message and the state change commit or roll back
-  together. That atomicity is the one property worth demonstrating, and it is a small change to
-  the existing services.
-- A worker claiming bounded batches with `SELECT … FOR UPDATE SKIP LOCKED` ordered by
-  `available_at`, with bounded exponential backoff on `attempts` and a `delivered_at` marker.
-  Retry exhaustion becomes *observable* — a queryable state with `attempts >= max_attempts` —
-  rather than a silent drop.
-- Idempotent consumption keyed on `(event_type, aggregate_id)`, so a duplicate delivery is a
-  no-op.
-- Tests: two workers racing for one batch deliver each message once; a handler that always raises
-  exhausts its attempts and is visible in that state; a failed enqueue rolls the mutation back.
-
-**What is missing for it to be worth building.** A real notification channel. That is the honest
-first item on the "next week" list in the `README`, and it is where the work should start —
-because the outbox is only interesting once something is listening.
-
-## Phase 8 — Final quality, documentation and reviewer readiness
-
-**Requirements.** Re-run every gate on the finished system, check that the documentation
-describes what actually runs rather than what was intended, make the submission reviewable by
-someone with limited time, and merge to `main`.
-
-**Documentation audit.** Documentation that drifts is worse than none, so every load-bearing
-claim was checked against the running system rather than re-read:
-
-| Claim | How it was checked | Result |
+| Piece | Where | Notes |
 | --- | --- | --- |
-| The API surface in `docs/API.md` | Enumerated the app's OpenAPI schema and compared | **20/20 operations documented, none undocumented, none missing** |
-| The demo accounts in `README.md` | Compared against the users `scripts/seed.py` creates | **12/12 match exactly** |
-| The `Makefile` targets named in the README | `make help` | Every documented target exists |
-| `.env.example` files | Read all of them | Placeholders only; no real credentials, keys or tokens |
-| Test counts stated in the README | `uv run pytest --collect-only -q` and `npm run test` | 186 backend, 55 frontend — both match |
-| Error codes and status codes in `docs/API.md` | Cross-checked against the exception handlers and the contract check | Consistent |
-| Frontend behaviour described in `docs/FRONTEND.md` | Re-derived from the source files it names | Consistent |
-| The "not built" list in `docs/KNOWN_LIMITATIONS.md` | Compared against the route table and the frontend's views | Accurate — nothing listed is silently present |
+| `outbox_events` | migration `0003` | `BigSerial` id, known event types, `pending`/`delivered`/`failed`, `attempts`, `next_attempt_at`, `last_error`. Partial index on the claim query |
+| `notifications` | migration `0003` | One row per event and recipient, with `read_at`. Unique `outbox_event_id` is the exactly-once constraint |
+| Producer | `services/outbox.py`, called from `services/work_items.py` | Written in the caller's transaction; it never commits |
+| Worker | `app/worker.py`, `services/outbox.py` | Claims with `FOR UPDATE SKIP LOCKED`, delivers each event in its own savepoint, bounded backoff, terminal `failed` |
+| Read API | `api/v1/notifications.py` | List (keyset), unread count, mark one, mark all. Person-scoped by the token |
+| Operator visibility | `api/v1/ops.py` | Per-team delivery counts, admin-only. Counts only — no titles or recipients |
+| Person-scoped work | `api/v1/me.py`, `services/work_items.my_items_statement` | `/me/items`: assigned to the caller, across the caller's memberships |
 
-**Additions for the reviewer.** A "Where to look first" table in the `README` maps each of the
-five correctness behaviours to the test that proves it and the decision record that explains it,
-so the claim can be checked rather than trusted. A "Next week I would…" section lists the work
-in priority order, starting with the notification channel the deferred outbox is waiting on.
+**Why a separate process, and why no broker.** The state change, its activity event and its
+outbox row commit together, so "the assignment happened but nobody will ever be told" is
+impossible — the same guarantee history already had, extended to delivery. The worker is a
+separate process so a slow notification cannot slow a request and a restart cannot stop
+delivery. No broker was added: PostgreSQL has row locking and `SKIP LOCKED`, which is exactly
+what a queue needs, and a broker would introduce a second place where the truth lives. Full
+reasoning and rejected alternatives: `ENGINEERING_DECISIONS.md` 23.
+
+**At-least-once is stated, not hidden.** A worker can deliver and crash before committing, so
+the same event can be processed twice. `notifications.outbox_event_id` is unique and the
+consumer inserts with `ON CONFLICT DO NOTHING`, which makes the *effect* exactly-once. The
+tests assert the effect rather than claiming exactly-once delivery.
+
+**Deliberate product limits, recorded so they are not read as omissions.** Only assignment,
+approval and rejection notify. Claims, comments and ordinary status moves appear in the
+activity feed and would make the inbox noise. A recipient who has left the team is not
+notified; the event is marked delivered. Marking an already-read notification read again
+succeeds without rewriting `read_at`.
+
+**Defects found and fixed while building it.**
+
+| Defect | How it surfaced | Fix |
+| --- | --- | --- |
+| The claim response's `ETag` was discarded by the client, so claim (which bumps the version) followed by a transition sent `If-Match: "1"` and got `412` | A new frontend test failed on the *next* transition after a successful claim | `claimItem` returns the parsed response including its `ETag`; the test was run against the old client to confirm it failed there |
+| Migration `0003` double-prefixed its `CHECK` constraint names (`ck_outbox_events_ck_outbox_events_…`) because the metadata naming convention applies to the suffix it is given | `tests/test_index_inventory.py` compares declared names with `pg_constraint` | The migration now passes the bare suffix, matching the models. Both databases were downgraded to `0002` and re-upgraded; `alembic check` was already green, which is exactly the drift that test exists to catch |
+| Two `NotificationsPage` tests queried a composite line with an exact-string matcher, and one regex matched both the body and the meta line | The suite failed with "found multiple elements" / "unable to find" | The assertions now match the line (`/^Platform ·/`); one fixture body was reworded so the test is unambiguous. The component was correct |
 
 **Verification.**
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Every gate at once | `make check` | Passed — backend lint + types + **186 tests**, frontend lint + types + **55 tests** |
-| Production build | `npm run build` | Passed — 296.58 kB JS (89.24 kB gzip), 8.89 kB CSS (2.34 kB gzip) |
+| Backend suite | `uv run pytest` | **229 passed** in 49.8 s against real PostgreSQL |
+| Frontend suite | `npx vitest run` | **79 passed** in nine files |
+| Formatting, lint, types | `uv run ruff format --check .`, `uv run ruff check .`, `mypy .`, `npx eslint .`, `npx tsc --noEmit` | Clean (88 backend source files checked by mypy) |
 | Migration drift | `uv run alembic check` | "No new upgrade operations detected" |
-| Real-HTTP contract check | script against the seeded database and a real `uvicorn` process | **41/41 checks passed** |
-| CORS preflight | `OPTIONS /api/v1/items` with the Vite origin | Passed |
-| End-to-end pass on the merged `main` | The Phase 5 suite (67 checks) and the Phase 6 contract suite (41 checks) re-run against a server started from `main` | **108/108 passed** |
-| CI (GitHub Actions) on `main` | run [`38980884416`](https://github.com/mahinigam/newtonite/actions/runs/38980884416) | Passed — both jobs green |
+| Index and constraint inventory | `uv run pytest tests/test_index_inventory.py` | 17 passed — including the two new notification indexes, the partial outbox index, and the new named constraints |
+
+## Phase 8 — Documentation, the container stack, and reviewer readiness
+
+**Requirements.** Re-run every gate on the finished system; make the documentation describe
+what runs; give a reviewer a path that does not depend on their toolchain; and check that
+none of the earlier claims drifted once the new features landed.
+
+**One command.** `docker compose up --build` now runs PostgreSQL, the API, the outbox worker
+and the web app. Migrations and the idempotent seed run in the API's entrypoint, the worker
+starts once the API reports ready, and nginx serves the built SPA while forwarding `/api` to
+the API. That last choice is deliberate: one origin means no CORS permission in the
+containerised setup and no host name baked into the image — `VITE_API_BASE_URL` is built as an
+empty string, which the client reads as "same origin". Reasoning and trade-offs:
+`ENGINEERING_DECISIONS.md` 27.
+
+**Documentation audit, re-run after Phase 7.** Documentation that drifts is worse than none,
+so every load-bearing claim was checked against the running system rather than re-read:
+
+| Claim | How it was checked | Result |
+| --- | --- | --- |
+| The API surface in `docs/API.md` | Enumerated the app's OpenAPI schema and compared | Every operation documented; the four notification routes, `/me/items` and `/ops/outbox` were added in this phase |
+| The demo accounts in `README.md` | Compared against the users `scripts/seed.py` creates | 12/12 match exactly |
+| The `Makefile` targets named in the README | `make help` | Every documented target exists, including `worker`, `worker-once`, `stack-up`, `stack-down` |
+| `.env.example` | Read it | Placeholders only; the outbox settings were added |
+| Test counts stated in the README and here | `uv run pytest --collect-only -q`, `npx vitest run` | 229 backend, 79 frontend — both match |
+| Filter values in `docs/API.md` | Compared with `app/models/enums.py` | **Corrected**: the documented item types were `task, bug, incident, payment, request`; the real set is `incident, customer_issue, payment, compliance, task` |
+| The index claim for `ix_work_items_assignee_created` | `scripts/explain_lists.py`, extended with the `/me/items` shape | **Corrected and measured**: the team list intersects it with the team index; `/me/items` seeks it alone. Both plans are now in `docs/DATA_MODEL.md` |
+| The "not built" list in `docs/KNOWN_LIMITATIONS.md` | Compared against the route table, the worker and the frontend's views | Accurate — the outbox row was replaced by the three genuine gaps (second channel, push, shareable presets) |
+
+**Verification.**
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Every gate at once | `make check` | Backend lint + format + types + **229 tests**, frontend lint + types + **79 tests**, production build |
+| Production build | `npm run build` | Passed — 306.21 kB JS (91.24 kB gzip), 10.56 kB CSS (2.65 kB gzip) |
+| Migration drift | `uv run alembic check` | "No new upgrade operations detected" |
+| Container stack, built and run | `docker compose up --build` | Four services healthy; API `/readyz` green; worker started and idle |
+| Real-HTTP checks through the container's nginx origin | scripted against `http://localhost:8080` | **26/26 passed** — proxied health, login, claim and its `ETag`, assignment, worker delivery, notification list and count, acknowledgement, `/me/items`, cross-team `404`, stale `412`, activity |
+| Earlier end-to-end suites | The Phase 5 suite (67) and the Phase 6 contract suite (41) | **108/108 passed** on the merged `main` before this phase's changes |
 
 **What was not weakened to get here.** No test was skipped, deleted or relaxed, and no
-assertion was rewritten to match observed behaviour. The two bugs found during verification
-(the pagination fixture that assumed insertion order equals id order, and the activity endpoint
-accepting an item-list cursor) were fixed in the implementation or in a *defective* test, with
-the reason recorded in the Phase 5 section. The two frontend issues found in Phase 6 — the
-missing testing-library cleanup and the unreachable `validation_failed` branch — were likewise
-fixed in the code.
-
-**Merge.** Merged to `main` as `6e7f2b4` (a merge commit, not a fast-forward, so the
-phase-by-phase history stays readable), on top of the Phase 1–2 work that landed in PR #1.
-Nothing was rewritten and nothing was force-pushed: the remote `main` had moved ahead while
-this branch was being built, so it was integrated rather than overwritten.
+assertion was rewritten to match observed behaviour. Two of the three defects above were in
+the implementation (the discarded `ETag`, the migration's constraint names) and were fixed
+there; the third was in two test queries that did not express what they meant, and the reason
+is recorded rather than silently adjusted.
 
 **Known defects.** None known. The residual risks are the documented ones in
 [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md) — chiefly no login rate limiting, no
-browser-driven end-to-end test, and the deferred outbox.
+browser-driven end-to-end test in CI, and no hosted deployment.
 
 ## How to read this document
 

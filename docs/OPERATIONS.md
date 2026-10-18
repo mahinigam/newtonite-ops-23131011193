@@ -16,6 +16,9 @@ root (or `backend/.env`). Copy `.env.example` to `.env` and adjust.
 | `SESSION_ABSOLUTE_TTL_HOURS` | `12` | Maximum lifetime of a login session |
 | `SESSION_IDLE_TTL_HOURS` | `2` | Session is rejected after this much inactivity |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | Comma-separated browser origins allowed to call the API |
+| `OUTBOX_BATCH_SIZE` | `20` | Events the worker claims at once |
+| `OUTBOX_POLL_INTERVAL_SECONDS` | `1.0` | How long the worker waits when the queue is empty |
+| `OUTBOX_MAX_ATTEMPTS` | `5` | Attempts before an event becomes terminally `failed` |
 | `LOG_LEVEL` | `INFO` | Python logging level |
 
 `.env` is gitignored. Never commit real credentials; `.env.example` holds placeholders
@@ -53,6 +56,53 @@ and forgetting the revision. It also runs as part of the test suite
 Migration revisions are hand-reviewed after `--autogenerate`. The
 append-only trigger on `activity_events` is written manually because autogenerate cannot
 express it.
+
+## The outbox worker
+
+Notifications are not delivered by the API. A mutation writes an `outbox_events` row in its
+own transaction, and `app/worker.py` delivers it:
+
+```bash
+cd backend
+uv run python -m app.worker          # poll until stopped (Ctrl-C is a clean shutdown)
+uv run python -m app.worker --once    # deliver what is due now, then exit
+```
+
+The worker is a **separate process** and must be running for notifications to arrive. The
+API is fully functional without it; assignment, approvals and the activity feed do not depend
+on delivery. In the containerised stack it is the `worker` service.
+
+What it does, and what to check when it misbehaves:
+
+| Observation | Meaning |
+| --- | --- |
+| `outbox worker started (batch=…, poll=…)` | The process is running and has a database connection |
+| Nothing is logged while the queue is empty | Normal: an idle poll is silent |
+| `notification delivery failed` at `WARNING` | One attempt failed; the event was rescheduled with backoff |
+| `outbox event exhausted its attempts` at `ERROR` | The event is now `failed` and will not be retried |
+| The process exits non-zero at start | The database is unreachable, or migrations have not been applied |
+
+Delivery counts per team are readable by a team admin:
+
+```bash
+curl -s http://localhost:8000/api/v1/ops/outbox -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+`failed` is the only terminal state, so a non-zero value is the signal that something needs a
+human: the event's `last_error` is in the table, and the usual causes are a departed recipient
+(handled, not a failure) or a bug in the handler. Requeue a failed event by returning it to
+`pending` with `attempts = 0`; it is a queue row, not history:
+
+```sql
+UPDATE outbox_events
+SET status = 'pending', attempts = 0, next_attempt_at = now(), last_error = NULL
+WHERE id = :id;
+```
+
+Two workers may run at once. They claim with `FOR UPDATE SKIP LOCKED`, so neither blocks and
+neither delivers the same event twice in the same batch; if both deliver the same event after
+a crash, the unique constraint on `notifications.outbox_event_id` makes the second insert a
+no-op.
 
 ## Diagnosing problems
 
@@ -158,9 +208,10 @@ cd backend
 uv run python -m scripts.explain_lists
 ```
 
-It prints `EXPLAIN (ANALYZE, BUFFERS)` for the seven list shapes the API actually issues,
-against whatever is in the connected database. It imports the service layer's
-`list_statement`, so the SQL it explains is the SQL the API runs. Run it against the seeded
+It prints `EXPLAIN (ANALYZE, BUFFERS)` for the thirteen list shapes the API actually issues,
+including the cross-team `/me/items` shape, against whatever is in the connected database. It
+imports the service layer's statement builders, so the SQL it explains is the SQL the API
+runs. Run it against the seeded
 database — on an empty table every plan is a sequential scan, because an index cannot win
 when there is nothing to walk past.
 
@@ -178,3 +229,9 @@ when there is nothing to walk past.
   logs.
 - The readiness probe is `/readyz`; use `/healthz` for liveness so a database blip does
   not restart otherwise healthy processes.
+- Run the worker under a supervisor (the Compose service uses `restart: unless-stopped`). A
+  stopped worker is not an outage — the queue is durable — but it is silent until somebody
+  checks `GET /api/v1/ops/outbox` or the process restarts.
+- Migrations run from the API container's entrypoint in the Compose stack. If you migrate by
+  hand instead, apply them **before** starting the worker, so it never reads a table that does
+  not exist yet.

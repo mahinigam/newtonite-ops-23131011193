@@ -70,10 +70,13 @@ export const keys = {
   teams: () => ['teams'] as const,
   members: (teamId: string) => ['teams', teamId, 'members'] as const,
   items: (teamId: string, filters: unknown) => ['teams', teamId, 'items', filters] as const,
+  myItems: (filters: unknown) => ['me', 'items', filters] as const,
   item: (itemId: string) => ['items', itemId] as const,
   comments: (itemId: string) => ['items', itemId, 'comments'] as const,
   itemActivity: (itemId: string) => ['items', itemId, 'activity'] as const,
   teamActivity: (teamId: string) => ['teams', teamId, 'activity'] as const,
+  notifications: () => ['notifications'] as const,
+  notificationsUnread: () => ['notifications', 'unread'] as const,
 }
 
 /**
@@ -125,6 +128,8 @@ export async function invalidateItemViews(
     client.invalidateQueries({ queryKey: keys.comments(itemId) }),
     client.invalidateQueries({ queryKey: keys.teamActivity(teamId) }),
     client.invalidateQueries({ queryKey: ['teams', teamId, 'items'] }),
+    // "My work" spans teams, so a change in one team can change it too.
+    client.invalidateQueries({ queryKey: ['me', 'items'] }),
   ])
 }
 

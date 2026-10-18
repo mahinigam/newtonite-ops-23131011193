@@ -10,6 +10,7 @@ import type {
   ActivityEvent,
   Comment,
   Membership,
+  Notification,
   Page,
   UserRef,
   WorkItemDetail,
@@ -91,6 +92,21 @@ export function event(overrides: Partial<ActivityEvent> = {}): ActivityEvent {
     meta: {},
     actor: NINA,
     created_at: '2026-10-15T10:00:00Z',
+    ...overrides,
+  }
+}
+
+export const NOTIFICATION_ID = '66666666-6666-4666-8666-666666666666'
+
+export function notification(overrides: Partial<Notification> = {}): Notification {
+  return {
+    id: NOTIFICATION_ID,
+    team_id: PLATFORM_TEAM_ID,
+    work_item_id: ITEM_ID,
+    event_type: 'work_item_assigned',
+    body: 'Lena Lead assigned you “Refund the duplicate charge”.',
+    created_at: '2026-10-15T10:00:00Z',
+    read_at: null,
     ...overrides,
   }
 }

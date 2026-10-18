@@ -514,6 +514,67 @@ async def count_items(session: AsyncSession, team_id: uuid.UUID | None = None) -
     return int((await session.execute(text(statement), parameters)).scalar_one())
 
 
+async def outbox_rows(session: AsyncSession) -> list[dict[str, Any]]:
+    """Every queued event, oldest first, with the fields the assertions care about."""
+    rows = (
+        (
+            await session.execute(
+                text(
+                    "SELECT id, event_type, aggregate_type, aggregate_id, team_id, payload, "
+                    "status, attempts, last_error, processed_at, next_attempt_at "
+                    "FROM outbox_events ORDER BY id"
+                )
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return [dict(row) for row in rows]
+
+
+async def count_outbox(session: AsyncSession) -> int:
+    return int((await session.execute(text("SELECT count(*) FROM outbox_events"))).scalar_one())
+
+
+async def notification_rows(
+    session: AsyncSession, recipient_id: uuid.UUID | None = None
+) -> list[dict[str, Any]]:
+    """Delivered notifications, oldest first, optionally for one recipient."""
+    statement = (
+        "SELECT id, outbox_event_id, recipient_id, team_id, work_item_id, event_type, body, "
+        "read_at FROM notifications"
+    )
+    parameters: dict[str, Any] = {}
+    if recipient_id is not None:
+        statement += " WHERE recipient_id = :recipient_id"
+        parameters["recipient_id"] = recipient_id
+    statement += " ORDER BY created_at, id"
+    rows = (await session.execute(text(statement), parameters)).mappings().all()
+    return [dict(row) for row in rows]
+
+
+async def count_notifications(session: AsyncSession, recipient_id: uuid.UUID | None = None) -> int:
+    statement = "SELECT count(*) FROM notifications"
+    parameters: dict[str, Any] = {}
+    if recipient_id is not None:
+        statement += " WHERE recipient_id = :recipient_id"
+        parameters["recipient_id"] = recipient_id
+    return int((await session.execute(text(statement), parameters)).scalar_one())
+
+
+async def make_outbox_due(session: AsyncSession) -> None:
+    """Skip the backoff wait, so a test can drive several attempts without sleeping.
+
+    Backoff is asserted separately (`test_backoff_grows_then_caps`); this helper is for
+    the exhaustion path, which is about what happens *after* the retries, not about the
+    waiting.
+    """
+    await session.execute(
+        text("UPDATE outbox_events SET next_attempt_at = now() WHERE status = 'pending'")
+    )
+    await session.commit()
+
+
 async def login(client: AsyncClient, email: str, password: str = TEST_PASSWORD) -> str:
     """Log in and return the bearer token, failing loudly if it does not work."""
     response = await client.post("/api/v1/auth/login", json={"email": email, "password": password})

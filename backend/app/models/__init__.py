@@ -8,6 +8,8 @@ from app.models.activity import ActivityEvent
 from app.models.base import Base
 from app.models.comment import Comment
 from app.models.idempotency import IdempotencyKey
+from app.models.notification import Notification
+from app.models.outbox import OutboxEvent
 from app.models.session import AuthSession
 from app.models.team import Membership, Team
 from app.models.user import User
@@ -20,6 +22,8 @@ __all__ = [
     "Comment",
     "IdempotencyKey",
     "Membership",
+    "Notification",
+    "OutboxEvent",
     "Team",
     "User",
     "WorkItem",

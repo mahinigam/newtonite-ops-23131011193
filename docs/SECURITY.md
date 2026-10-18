@@ -51,6 +51,17 @@ untrusted; PostgreSQL and the API process are trusted.
   team's resource exists. `403` is reserved for a caller already inside the team. A test asserts
   a foreign team and a random UUID produce identical responses.
 - Writes return what the database now holds, never an echo of the request.
+- **Notifications are scoped to a person, not a team.** The query is
+  `recipient_id = <the caller>`; there is no team in the path and no `user_id` parameter, so
+  the scope is the token. Somebody else's notification id is a `404`, exactly like a foreign
+  item, and the same database composite foreign key that keeps an assignee inside the team
+  keeps a recipient inside the team.
+- **`GET /ops/outbox` is scoped to teams where the caller is an admin** and returns counts
+  only — no titles, recipients or payloads. There is no global operator role in this domain,
+  and the endpoint does not invent one.
+- **The worker has no HTTP surface.** It holds a database connection and nothing else; it is
+  not reachable from the browser, and it authorizes nothing — every recipient was chosen and
+  constrained when the event was written.
 
 ## Injection and input handling
 
@@ -141,6 +152,8 @@ attaches the credential on its own.
 | Sessions are not rotated on privilege change | A session carries no role of its own, so a role change takes effect on the next request rather than requiring a new login | That behaviour is arguably already correct; document it explicitly |
 | Members can read all data in their team | Any member, including a viewer-beyond-role, sees the full roster | Field-level visibility rules if a future requirement demands them |
 | Idle window enforced up to ~60 s late | `last_used_at` is refreshed at most once a minute to avoid turning every read into a write | Tighten the interval, or compare against the request's start time |
+| A notification body is a snapshot | It contains the item title as it was when the event was written, so a later rename is not reflected. It is visible only to a current member of the team, and leaving the team deletes it | Render the item live and keep only the event type and ids in the row; the cost is a join on every notification |
+| Queue rows are readable by anyone with database access | The payload holds an item title and a recipient id, like every other table. The API never returns payloads | Column-level grants or encryption at rest, as part of a real deployment |
 
 ## Reporting
 

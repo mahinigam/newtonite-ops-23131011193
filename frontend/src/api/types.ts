@@ -111,6 +111,34 @@ export interface Comment {
   created_at: string
 }
 
+export type NotificationType =
+  | 'work_item_assigned'
+  | 'work_item_approved'
+  | 'work_item_rejected'
+
+/**
+ * A delivered notification. `body` is rendering-ready text the worker built when it
+ * delivered the event, and `team_id` plus `work_item_id` are enough to link back to the
+ * item because the session already carries the caller's memberships.
+ */
+export interface Notification {
+  id: string
+  team_id: string
+  work_item_id: string
+  event_type: NotificationType
+  body: string
+  created_at: string
+  read_at: string | null
+}
+
+export interface UnreadCount {
+  unread: number
+}
+
+export interface MarkAllReadResult {
+  marked: number
+}
+
 export interface ActivityEvent {
   id: number
   work_item_id: string

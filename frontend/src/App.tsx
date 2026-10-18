@@ -26,6 +26,8 @@ import { Empty } from './components/states'
 import { navigate, useRoute } from './lib/router'
 import { ItemDetailPage } from './features/items/ItemDetailPage'
 import { ItemListPage } from './features/items/ItemListPage'
+import { MyWorkPage } from './features/items/MyWorkPage'
+import { NotificationsPage } from './features/notifications/NotificationsPage'
 import { TeamActivityPage } from './features/activity/TeamActivityPage'
 
 /** A stable empty list, so `memberships` does not change identity on every render. */
@@ -81,6 +83,10 @@ export function App() {
         return activeTeam ? <TeamActivityPage team={activeTeam} /> : <UnknownTeam teamKey={route.teamKey} />
       case 'items':
         return activeTeam ? <ItemListPage team={activeTeam} /> : <UnknownTeam teamKey={route.teamKey} />
+      case 'myWork':
+        return <MyWorkPage />
+      case 'notifications':
+        return <NotificationsPage />
       case 'notFound':
         return (
           <Empty

@@ -37,6 +37,13 @@ EXPECTED_INDEXES: dict[str, str] = {
     "ix_memberships_user_id": "user_id",
     # Token lookup and "revoke every session for this user".
     "ix_auth_sessions_user_id": "user_id",
+    # The outbox worker's claim query. Partial, so the index is proportional to the
+    # backlog rather than to everything ever delivered.
+    "ix_outbox_events_pending": "WHERE",
+    # A person's notification list, newest first, keyset-paged like every other list.
+    "ix_notifications_recipient_created": "created_at DESC, id DESC",
+    # The unread badge. Partial: it only ever asks about rows that can be unread.
+    "ix_notifications_recipient_unread": "WHERE",
 }
 
 EXPECTED_CONSTRAINTS: dict[str, str] = {
@@ -62,6 +69,16 @@ EXPECTED_CONSTRAINTS: dict[str, str] = {
     "uq_auth_sessions_token_hash": "u",
     "uq_users_email": "u",
     "uq_teams_key": "u",
+    "ck_outbox_events_event_type_is_known": "c",
+    "ck_outbox_events_status_is_known": "c",
+    "ck_outbox_events_attempts_not_negative": "c",
+    "ck_notifications_event_type_is_known": "c",
+    "ck_notifications_body_length": "c",
+    "fk_outbox_events_team_id_teams": "f",
+    "fk_notifications_outbox_event_id_outbox_events": "f",
+    "fk_notifications_team_id_recipient_id_memberships": "f",
+    # At-least-once delivery, exactly-once effect: one event, one notification.
+    "uq_notifications_outbox_event_id": "u",
 }
 
 
@@ -129,3 +146,20 @@ async def test_unassigned_urgent_index_is_partial(db: AsyncSession) -> None:
     assert "where" in normalised
     assert "assignee_id is null" in normalised
     assert "status" in normalised and "priority" in normalised
+
+
+async def test_outbox_pending_index_is_partial(db: AsyncSession) -> None:
+    """The worker only claims pending rows, so the index must only hold those."""
+    definition = (
+        await db.execute(
+            text(
+                "SELECT indexdef FROM pg_indexes "
+                "WHERE schemaname = 'public' AND indexname = 'ix_outbox_events_pending'"
+            )
+        )
+    ).scalar_one()
+
+    normalised = definition.lower()
+    assert "where" in normalised
+    assert "pending" in normalised
+    assert "next_attempt_at" in normalised

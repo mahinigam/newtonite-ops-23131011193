@@ -38,6 +38,22 @@ describe('parseHash', () => {
     })
   })
 
+  it('parses the person-scoped views', () => {
+    expect(parseHash('#/my-work')).toEqual({ name: 'myWork' })
+    expect(parseHash('#/notifications')).toEqual({ name: 'notifications' })
+  })
+
+  it('does not treat a person-scoped path with extra segments as a route', () => {
+    expect(parseHash('#/my-work/anything')).toEqual({
+      name: 'notFound',
+      path: '/my-work/anything',
+    })
+    expect(parseHash('#/notifications/anything')).toEqual({
+      name: 'notFound',
+      path: '/notifications/anything',
+    })
+  })
+
   it('refuses an item id that is not UUID-shaped', () => {
     expect(parseHash('#/teams/platform/items/not-an-id')).toEqual({
       name: 'notFound',
@@ -66,6 +82,8 @@ describe('pathFor', () => {
       { name: 'items', teamKey: 'platform' },
       { name: 'item', teamKey: 'platform', itemId: ITEM_ID },
       { name: 'teamActivity', teamKey: 'platform' },
+      { name: 'myWork' },
+      { name: 'notifications' },
     ] as const
 
     for (const route of routes) {

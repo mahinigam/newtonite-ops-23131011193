@@ -15,18 +15,40 @@ import type {
   Comment,
   ItemFilters,
   LoginResponse,
+  MarkAllReadResult,
   MeResponse,
   MemberSummary,
+  Notification,
   Page,
   Priority,
   Status,
   TeamSummary,
+  UnreadCount,
   WorkItemDetail,
   WorkItemSummary,
   WorkItemType,
 } from './types'
 
-const BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
+/**
+ * Where the API lives.
+ *
+ * * unset — the local development default;
+ * * empty — **the same origin**. The container image is served by nginx, which forwards
+ *   `/api` to the API, so the browser needs no cross-origin permission and the image has no
+ *   machine-specific host name baked into it;
+ * * anything else — that origin.
+ *
+ * The three cases are distinct, which is why this is not a `||`: an empty string is a
+ * decision, not a missing value.
+ */
+const CONFIGURED_BASE_URL = import.meta.env.VITE_API_BASE_URL as string | undefined
+
+const BASE_URL: string =
+  CONFIGURED_BASE_URL === undefined
+    ? 'http://localhost:8000'
+    : CONFIGURED_BASE_URL === ''
+      ? window.location.origin
+      : CONFIGURED_BASE_URL
 
 /**
  * The API's stable error codes, as a union.
@@ -272,8 +294,64 @@ export const api = {
     })
   },
 
-  async claimItem(itemId: string): Promise<WorkItemDetail> {
-    const { data } = await request<WorkItemDetail>(`/api/v1/items/${itemId}/claim`, {
+  async claimItem(itemId: string): Promise<ApiResponse<WorkItemDetail>> {
+    // The claim bumps the version, so the response's `ETag` is the version the *next*
+    // conditional write must use. Returning only the body would leave the page holding
+    // the pre-claim version and make the following transition fail with `412`.
+    return await request<WorkItemDetail>(`/api/v1/items/${itemId}/claim`, {
+      method: 'POST',
+    })
+  },
+
+  /**
+   * Work assigned to the caller, across every team they belong to.
+   *
+   * No `assignee` parameter: the server derives the scope from the caller's memberships,
+   * and sending one would turn this into a general cross-team list.
+   */
+  async myItems(
+    filters: ItemFilters,
+    cursor: string | null,
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<Page<WorkItemSummary>> {
+    const { data } = await request<Page<WorkItemSummary>>('/api/v1/me/items', {
+      params: {
+        status: filters.statuses,
+        priority: filters.priorities,
+        type: filters.types,
+        q: filters.search,
+        cursor,
+        limit,
+      },
+      signal,
+    })
+    return data
+  },
+
+  async notifications(
+    cursor: string | null,
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<Page<Notification>> {
+    const { data } = await request<Page<Notification>>('/api/v1/notifications', {
+      params: { cursor, limit },
+      signal,
+    })
+    return data
+  },
+
+  async unreadCount(signal?: AbortSignal): Promise<UnreadCount> {
+    const { data } = await request<UnreadCount>('/api/v1/notifications/unread-count', { signal })
+    return data
+  },
+
+  async markNotificationRead(notificationId: string): Promise<void> {
+    await request<void>(`/api/v1/notifications/${notificationId}/read`, { method: 'POST' })
+  },
+
+  async markAllNotificationsRead(): Promise<MarkAllReadResult> {
+    const { data } = await request<MarkAllReadResult>('/api/v1/notifications/read-all', {
       method: 'POST',
     })
     return data
