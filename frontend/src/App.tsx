@@ -15,7 +15,7 @@
  *   request for it anyway.
  */
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 
 import { signOut } from './auth/auth'
 import { LoginPage } from './auth/LoginPage'
@@ -29,6 +29,8 @@ import { ItemListPage } from './features/items/ItemListPage'
 import { MyWorkPage } from './features/items/MyWorkPage'
 import { NotificationsPage } from './features/notifications/NotificationsPage'
 import { TeamActivityPage } from './features/activity/TeamActivityPage'
+import { api } from './api/client'
+import { sessionStore } from './auth/session'
 
 /** A stable empty list, so `memberships` does not change identity on every render. */
 const NO_MEMBERSHIPS: Membership[] = []
@@ -44,6 +46,47 @@ export function App() {
       : null
   const activeTeam = memberships.find((membership) => membership.team_key === requestedTeamKey) ?? null
 
+  // Preserve the last active team so the team tabs stay visible on person-scoped views
+  // (My work, Notifications). Without this, navigating away from a team view hides the
+  // "Work items" and "Team activity" navigation entries.
+  const [lastTeamKey, setLastTeamKey] = useState<string | null>(null)
+  useEffect(() => {
+    if (activeTeam) setLastTeamKey(activeTeam.team_key)
+  }, [activeTeam])
+  const preservedTeam = memberships.find((m) => m.team_key === lastTeamKey) ?? memberships[0] ?? null
+
+  // Silent refresh on page load: if there's no session in memory (page reload), try to
+  // restore it from the HttpOnly refresh cookie.
+  const [restoring, setRestoring] = useState(true)
+  useEffect(() => {
+    if (session) {
+      setRestoring(false)
+      return
+    }
+    let cancelled = false
+    async function restore() {
+      try {
+        const pair = await api.refresh()
+        const me = await api.me()
+        if (!cancelled) {
+          sessionStore.start({
+            user: me.user,
+            memberships: me.memberships,
+            accessExpiresAt: pair.access_expires_at,
+          })
+        }
+      } catch {
+        // No valid refresh token — stay logged out.
+      } finally {
+        if (!cancelled) setRestoring(false)
+      }
+    }
+    restore()
+    return () => {
+      cancelled = true
+    }
+  }, [session])
+
   // Landing on `#/` with teams to choose from goes to the first one. Done in an effect
   // rather than during render so the URL is the only thing that decides what is shown.
   useEffect(() => {
@@ -52,6 +95,8 @@ export function App() {
       if (first) navigate({ name: 'items', teamKey: first.team_key })
     }
   }, [session, route.name, memberships])
+
+  if (restoring) return <div className="app"><main className="app__main"><p>Loading…</p></main></div>
 
   if (!session) return <LoginPage />
 
@@ -102,7 +147,7 @@ export function App() {
   return (
     <Layout
       memberships={memberships}
-      activeTeamKey={activeTeam?.team_key ?? null}
+      activeTeamKey={preservedTeam?.team_key ?? null}
       onSignOut={() => void signOut()}
     >
       {renderView()}

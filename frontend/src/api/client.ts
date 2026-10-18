@@ -306,6 +306,14 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
 // --------------------------------------------------------------------------- //
 
 export const api = {
+  async refresh(): Promise<TokenPairResponse> {
+    const { data } = await request<TokenPairResponse>('/api/v1/auth/refresh', {
+      method: 'POST',
+    })
+    onTokenPairReceived(data)
+    return data
+  },
+
   async login(email: string, password: string): Promise<TokenPairResponse> {
     const { data } = await request<TokenPairResponse>('/api/v1/auth/login', {
       method: 'POST',
