@@ -9,11 +9,11 @@
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { ApiError, api, getToken, setToken } from './client'
+import { ApiError, api, getAccessToken, setAccessToken } from './client'
 import { errorResponse, installFetch, jsonResponse } from '../test/fetch'
 import { detail, page, summary } from '../test/fixtures'
 afterEach(() => {
-  setToken(null)
+  setAccessToken(null)
 })
 
 describe('error handling', () => {
@@ -89,10 +89,10 @@ describe('requests', () => {
     await api.me()
     expect(calls[0]?.headers['authorization']).toBeUndefined()
 
-    setToken('tok_abc')
+    setAccessToken('tok_abc')
     await api.me()
     expect(calls[1]?.headers['authorization']).toBe('Bearer tok_abc')
-    expect(getToken()).toBe('tok_abc')
+    expect(getAccessToken()).toBe('tok_abc')
   })
 
   it('captures the ETag from the response header', async () => {

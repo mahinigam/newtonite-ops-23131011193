@@ -6,8 +6,9 @@
  * that into a typed `ApiError`, so components branch on `code` rather than on a status
  * number or, worse, on the text of a message.
  *
- * It also owns the bearer token. The token lives in a module variable, not in
- * `localStorage`: see `docs/SECURITY.md` for the reasoning and the trade-off it accepts.
+ * It also owns the bearer token. The access token lives in a module variable (memory
+ * only). The refresh token is an HttpOnly cookie managed by the browser. Silent
+ * refresh is handled here.
  */
 
 import type {
@@ -15,15 +16,15 @@ import type {
   ActivityFilters,
   Comment,
   ItemFilters,
-  LoginResponse,
-  MarkAllReadResult,
   MeResponse,
   MemberSummary,
+  MarkAllReadResult,
   Notification,
   Page,
   Priority,
   Status,
   TeamSummary,
+  TokenPairResponse,
   UnreadCount,
   WorkItemDetail,
   WorkItemSummary,
@@ -119,14 +120,20 @@ export class ApiError extends Error {
   }
 }
 
-let token: string | null = null
+let accessToken: string | null = null
+let accessExpiresAt: string | null = null
+let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
-export function setToken(value: string | null): void {
-  token = value
+export function setAccessToken(value: string | null): void {
+  accessToken = value
 }
 
-export function getToken(): string | null {
-  return token
+export function getAccessToken(): string | null {
+  return accessToken
+}
+
+export function getAccessExpiresAt(): string | null {
+  return accessExpiresAt
 }
 
 interface RequestOptions {
@@ -175,9 +182,75 @@ export interface ApiResponse<T> {
   etag: string | null
 }
 
+let isRefreshing = false
+let refreshPromise: Promise<TokenPairResponse | null> | null = null
+
+/** Called by the auth store when login/refresh succeeds. */
+export function onTokenPairReceived(pair: TokenPairResponse): void {
+  accessToken = pair.access_token
+  accessExpiresAt = pair.access_expires_at
+  scheduleRefresh(pair.access_expires_at)
+}
+
+function clearTokens(): void {
+  accessToken = null
+  accessExpiresAt = null
+  if (refreshTimer) {
+    clearTimeout(refreshTimer)
+    refreshTimer = null
+  }
+}
+
+/** Schedule a silent refresh ~60s before the access token expires. */
+function scheduleRefresh(expiresAt: string): void {
+  if (refreshTimer) clearTimeout(refreshTimer)
+  const expiry = new Date(expiresAt).getTime()
+  const now = Date.now()
+  const MAX_TIMEOUT = 2147483647 // max 32-bit signed int ~24.8 days
+  const delay = Math.min(MAX_TIMEOUT, Math.max(0, expiry - now - 60_000)) // 60s before expiry
+  refreshTimer = setTimeout(() => {
+    doRefresh()
+  }, delay)
+}
+
+/** Perform a silent refresh via the HttpOnly cookie. */
+async function doRefresh(): Promise<TokenPairResponse | null> {
+  if (isRefreshing) return refreshPromise
+  isRefreshing = true
+  refreshPromise = (async () => {
+    try {
+      const url = buildUrl('/api/v1/auth/refresh', {})
+      const response = await fetch(url, {
+        method: 'POST',
+        credentials: 'include', // Critical: sends the HttpOnly cookie
+        headers: { Accept: 'application/json' },
+      })
+      if (!response.ok) {
+        // Refresh failed (token expired, revoked, or reused) — clear tokens
+        clearTokens()
+        return null
+      }
+      const pair = (await response.json()) as TokenPairResponse
+      accessToken = pair.access_token
+      accessExpiresAt = pair.access_expires_at
+      scheduleRefresh(pair.access_expires_at)
+      return pair
+    } catch {
+      clearTokens()
+      return null
+    } finally {
+      isRefreshing = false
+      refreshPromise = null
+    }
+  })()
+  return refreshPromise
+}
+
 async function request<T>(path: string, options: RequestOptions = {}): Promise<ApiResponse<T>> {
   const headers: Record<string, string> = { Accept: 'application/json', ...options.headers }
-  if (token) headers.Authorization = `Bearer ${token}`
+  // Don't attach Authorization for the refresh endpoint — it uses the cookie
+  const isRefresh = path === '/api/v1/auth/refresh'
+  if (accessToken && !isRefresh) headers.Authorization = `Bearer ${accessToken}`
   if (options.body !== undefined) headers['Content-Type'] = 'application/json'
 
   let response: Response
@@ -187,10 +260,9 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
       headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
       signal: options.signal,
+      credentials: isRefresh ? 'include' : 'omit', // Only send cookie for refresh
     })
   } catch (cause) {
-    // The browser refuses to describe a CORS failure or a dropped connection, so the
-    // honest report is "the server could not be reached" rather than a guess.
     if (cause instanceof DOMException && cause.name === 'AbortError') throw cause
     throw new ApiError(
       0,
@@ -199,7 +271,30 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
     )
   }
 
-  if (!response.ok) throw await readError(response)
+  if (!response.ok) {
+    // If we got a 401 and haven't tried refreshing yet, attempt one silent refresh
+    // and retry the original request exactly once.
+    if (response.status === 401 && !isRefresh && accessToken) {
+      const refreshed = await doRefresh()
+      if (refreshed) {
+        // Retry the original request with the new access token
+        const retryHeaders: Record<string, string> = { Accept: 'application/json', ...options.headers }
+        if (options.body !== undefined) retryHeaders['Content-Type'] = 'application/json'
+        retryHeaders.Authorization = `Bearer ${accessToken}`
+        const retryResponse = await fetch(buildUrl(path, options.params), {
+          method: options.method ?? 'GET',
+          headers: retryHeaders,
+          body: options.body === undefined ? undefined : JSON.stringify(options.body),
+          signal: options.signal,
+        })
+        if (!retryResponse.ok) throw await readError(retryResponse)
+        if (retryResponse.status === 204) return { data: undefined as T, etag: null }
+        const data = (await retryResponse.json()) as T
+        return { data, etag: retryResponse.headers.get('ETag') }
+      }
+    }
+    throw await readError(response)
+  }
 
   if (response.status === 204) return { data: undefined as T, etag: null }
   const data = (await response.json()) as T
@@ -211,16 +306,18 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
 // --------------------------------------------------------------------------- //
 
 export const api = {
-  async login(email: string, password: string): Promise<LoginResponse> {
-    const { data } = await request<LoginResponse>('/api/v1/auth/login', {
+  async login(email: string, password: string): Promise<TokenPairResponse> {
+    const { data } = await request<TokenPairResponse>('/api/v1/auth/login', {
       method: 'POST',
       body: { email, password },
     })
+    onTokenPairReceived(data)
     return data
   },
 
   async logout(): Promise<void> {
-    await request<{ revoked: boolean }>('/api/v1/auth/logout', { method: 'POST' })
+    await request<void>('/api/v1/auth/logout', { method: 'POST' })
+    clearTokens()
   },
 
   async me(signal?: AbortSignal): Promise<MeResponse> {

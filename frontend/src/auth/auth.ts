@@ -1,7 +1,7 @@
 /**
  * Sign in and sign out.
  *
- * `signIn` deliberately makes **two** calls: `login` returns the token and the user, and
+ * `signIn` deliberately makes **two** calls: `login` returns the token pair and the user, and
  * `me` returns the memberships. The roles are read from the server after the session
  * exists rather than being inferred, because every role check in the interface is a
  * *rendering* decision and the server's answer is the one worth rendering.
@@ -11,19 +11,20 @@ import { api } from '../api/client'
 import { sessionStore } from './session'
 
 export async function signIn(email: string, password: string): Promise<void> {
-  const login = await api.login(email, password)
-  // The token is needed for the very next call, so it is installed before `me`.
-  sessionStore.start(login.token, {
-    user: login.user,
+  const pair = await api.login(email, password)
+  // The access token is installed by api.login via onTokenPairReceived.
+  // Now install the session with memberships.
+  sessionStore.start({
+    user: pair.user,
     memberships: [],
-    expiresAt: login.expires_at,
+    accessExpiresAt: pair.access_expires_at,
   })
   try {
     const me = await api.me()
-    sessionStore.start(login.token, {
+    sessionStore.start({
       user: me.user,
       memberships: me.memberships,
-      expiresAt: login.expires_at,
+      accessExpiresAt: pair.access_expires_at,
     })
   } catch (error) {
     // A token that cannot read its own memberships is not usable; do not leave it behind.

@@ -48,6 +48,16 @@ export interface MeResponse {
   memberships: Membership[]
 }
 
+/** Token pair returned by login and refresh. */
+export interface TokenPairResponse {
+  access_token: string
+  access_token_type: string
+  access_expires_at: string
+  refresh_expires_at: string
+  user: UserRef
+}
+
+/** Kept for backward compatibility during migration. */
 export interface LoginResponse {
   token: string
   token_type: string

@@ -135,7 +135,7 @@ export function ItemEditForm({
   const patch = buildPatch()
   const dirty = Object.keys(patch).length > 0
   const canAssignOthers = can(team.role, 'assign_others')
-  const assigneeLocked = !canAssignOthers && item.assignee !== null && item.assignee.id !== draft.assigneeId
+  const assigneeLocked = !canAssignOthers && item.assignee != null && item.assignee.id !== draft.assigneeId
 
   // A viewer cannot edit anything, so the form is not shown at all. Rendering inputs that
   // the server will refuse would be offering a control that cannot work; the fields are

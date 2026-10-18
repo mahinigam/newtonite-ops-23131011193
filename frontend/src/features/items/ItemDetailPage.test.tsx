@@ -43,10 +43,10 @@ const ITEM_PATH = `/api/v1/items/${ITEM_ID}`
  * is claiming. Tests that exercise the optimistic path depend on this session existing.
  */
 beforeEach(() => {
-  sessionStore.start('test-token', {
+  sessionStore.start({
     user: NINA,
     memberships: [membership()],
-    expiresAt: '2099-01-01T00:00:00Z',
+    accessExpiresAt: '2099-01-01T00:00:00Z',
   })
 })
 

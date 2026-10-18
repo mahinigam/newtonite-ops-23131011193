@@ -25,6 +25,7 @@ ALL_TABLES = (
     "memberships",
     "idempotency_keys",
     "auth_sessions",
+    "refresh_tokens",
     "users",
     "teams",
 )

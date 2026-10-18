@@ -10,7 +10,7 @@ from app.models.comment import Comment
 from app.models.idempotency import IdempotencyKey
 from app.models.notification import Notification
 from app.models.outbox import OutboxEvent
-from app.models.session import AuthSession
+from app.models.session import AuthSession, RefreshToken
 from app.models.team import Membership, Team
 from app.models.user import User
 from app.models.work_item import WorkItem
@@ -24,6 +24,7 @@ __all__ = [
     "Membership",
     "Notification",
     "OutboxEvent",
+    "RefreshToken",
     "Team",
     "User",
     "WorkItem",
