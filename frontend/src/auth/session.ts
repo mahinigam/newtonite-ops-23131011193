@@ -12,7 +12,7 @@
 
 import { useSyncExternalStore } from 'react'
 
-import { onTokenPairReceived } from '../api/client'
+import { clearTokens } from '../api/client'
 import type { Membership, UserRef } from '../api/types'
 
 export interface Session {
@@ -44,13 +44,8 @@ export const sessionStore = {
 
   /** Adopt a token pair and the caller it belongs to. */
   start(pair: { user: UserRef; memberships: Membership[]; accessExpiresAt: string }): void {
-    onTokenPairReceived({
-      access_token: '', // already set by client
-      access_token_type: 'Bearer',
-      access_expires_at: pair.accessExpiresAt,
-      refresh_expires_at: '', // not used by store
-      user: pair.user,
-    })
+    // The access token is already set by api.login() via onTokenPairReceived.
+    // We only need to record the session metadata here.
     current = {
       user: pair.user,
       memberships: pair.memberships,
@@ -64,6 +59,7 @@ export const sessionStore = {
    * token cannot leave the interface looking signed in.
    */
   clear(): void {
+    clearTokens()
     current = null
     emit()
   },

@@ -192,7 +192,7 @@ export function onTokenPairReceived(pair: TokenPairResponse): void {
   scheduleRefresh(pair.access_expires_at)
 }
 
-function clearTokens(): void {
+export function clearTokens(): void {
   accessToken = null
   accessExpiresAt = null
   if (refreshTimer) {
@@ -260,7 +260,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
       headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
       signal: options.signal,
-      credentials: isRefresh ? 'include' : 'omit', // Only send cookie for refresh
+      credentials: 'include', // Required for Set-Cookie on login and cookie on refresh
     })
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === 'AbortError') throw cause
