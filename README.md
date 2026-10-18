@@ -166,6 +166,11 @@ you want to run the tests.
 
 ## Setup, step by step
 
+```bash
+git clone https://github.com/mahinigam/newtonite-ops-23131011193.git
+cd newtonite-ops-23131011193
+```
+
 ### 1. Configuration
 
 ```bash

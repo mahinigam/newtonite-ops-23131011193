@@ -32,7 +32,7 @@ execution plan; record assumptions, risks and planned architecture.
 - The working directory was a Git repository with **no commits** and only two untracked
   entries: `AGENTS.md` and `.opencode/skills/test-and-fix/SKILL.md`. No existing
   implementation was present, so nothing had to be preserved or reconciled.
-- `origin` is `https://github.com/mahinigam/newtonite`. The remote existed, was public and
+- `origin` is `https://github.com/mahinigam/newtonite-ops-23131011193`. The remote existed, was public and
   contained **no refs** (`git ls-remote` returned nothing; the GitHub API reported the
   repository).
 - Both source documents were read locally from `~/Downloads`:
@@ -616,7 +616,7 @@ React and TanStack Query.
 | Backend tests (unchanged, re-run) | `uv run pytest -q` | Passed — 186 passed |
 | API contract over real HTTP | `uv run python` script against the seeded database and a real `uvicorn` process | **41/41 checks passed** — see below |
 | CORS preflight | `OPTIONS /api/v1/items` with `Origin: http://localhost:5173` | Passed — `access-control-allow-origin: http://localhost:5173`, allowing `Authorization`, `Content-Type`, `Idempotency-Key`, `If-Match` |
-| CI (GitHub Actions) | run [`38980249711`](https://github.com/mahinigam/newtonite/actions/runs/38980249711) | Passed — both jobs green, including the new frontend job (`npm ci`, lint, typecheck, test, build) |
+| CI (GitHub Actions) | run [`38980249711`](https://github.com/mahinigam/newtonite-ops-23131011193/actions/runs/38980249711) | Passed — both jobs green, including the new frontend job (`npm ci`, lint, typecheck, test, build) |
 
 **The contract check, and why the component tests are not enough.** The frontend tests stub
 `fetch`, which is the right way to test a component but proves nothing about the wire format.
@@ -765,6 +765,11 @@ assertion was rewritten to match observed behaviour. Two of the three defects ab
 the implementation (the discarded `ETag`, the migration's constraint names) and were fixed
 there; the third was in two test queries that did not express what they meant, and the reason
 is recorded rather than silently adjusted.
+
+**Repository name.** The execution plan requires `newtonite-ops-<rollno>`, so the repository
+was renamed to `mahinigam/newtonite-ops-23131011193` at the end of this phase. GitHub
+redirects the old URL, and the clone command in the README was updated and then re-verified
+from the new name.
 
 **Known defects.** None known. The residual risks are the documented ones in
 [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md) — chiefly no login rate limiting, no
