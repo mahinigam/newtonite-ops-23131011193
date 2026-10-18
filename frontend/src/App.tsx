@@ -15,7 +15,7 @@
  *   request for it anyway.
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState } from "react"
 
 import { signOut } from './auth/auth'
 import { LoginPage } from './auth/LoginPage'
@@ -50,19 +50,16 @@ export function App() {
   // (My work, Notifications). Without this, navigating away from a team view hides the
   // "Work items" and "Team activity" navigation entries.
   const [lastTeamKey, setLastTeamKey] = useState<string | null>(null)
-  useEffect(() => {
-    if (activeTeam) setLastTeamKey(activeTeam.team_key)
-  }, [activeTeam])
+  if (activeTeam && activeTeam.team_key !== lastTeamKey) {
+    setLastTeamKey(activeTeam.team_key)
+  }
   const preservedTeam = memberships.find((m) => m.team_key === lastTeamKey) ?? memberships[0] ?? null
 
   // Silent refresh on page load: if there's no session in memory (page reload), try to
   // restore it from the HttpOnly refresh cookie.
-  const [restoring, setRestoring] = useState(true)
+  const [restoring, setRestoring] = useState(() => !session)
   useEffect(() => {
-    if (session) {
-      setRestoring(false)
-      return
-    }
+    if (session) return
     let cancelled = false
     async function restore() {
       try {
