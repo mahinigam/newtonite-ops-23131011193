@@ -3,7 +3,7 @@
 This document states what the project does **not** do, why, and what it would take to
 address each item. It is updated every phase and reflects the code as pushed.
 
-Last updated: 2026-10-18 (end of Phase 9).
+Last updated: 2026-10-19 (final compliance and documentation accuracy pass).
 
 ## Not built yet, by plan
 
@@ -30,7 +30,7 @@ deferred.
 | Real-time updates (WebSockets) | The brief says polling or refetching is sufficient. WebSockets would add a stateful connection layer and a second source of truth without improving any tested invariant. |
 | Mobile applications | Out of scope for a browser-based internal tool. |
 | Reopening closed items | Deliberately not implemented. Reopening must define who may do it, whether it resets the version, and what history it produces. Rather than guess, closing is terminal for now and the decision is recorded in `ENGINEERING_DECISIONS.md`. |
-| Deleting work items and comments | The guidance prefers resolving to deleting. Both are append-only, and history must not silently disappear. |
+| Deleting work items and comments | Neither can be deleted through the API. Comments are append-only; work items are mutable and versioned, and closing is terminal. |
 | Editing or deleting comments | A comment is evidence of what somebody said. Editing it would make the activity timeline unreliable. |
 | Login rate limiting and account lockout | Not implemented. The mitigation today is a generic error message that does not reveal whether an email exists. See [`SECURITY.md`](SECURITY.md) for the residual risk. |
 | Password change, password reset, MFA | There is no self-registration and no credential lifecycle in the demo scope. |
@@ -54,11 +54,12 @@ deferred.
 | No observability beyond structured logs | Diagnosing a production incident would rely on logs alone | Add request IDs, metrics and tracing when the deployment target is known |
 | The idle session window can be enforced up to ~60 s late | `last_used_at` is refreshed at most once a minute, so a session that has just gone idle takes effect slightly later | Deliberate: the alternative turns every read into a write. Documented in `ENGINEERING_DECISIONS.md`, with the interval as a tunable constant |
 | A revoked or expired session is reported, but a stale role is not | A session carries no role of its own, so a role change applies from the next request rather than forcing a re-login. This is intended, not a defect | Documented in `SECURITY.md`; no change planned |
-| The activity views are not text-searchable | Neither view has a `q`. The team feed can be narrowed by date range and actor, but finding an old *note* still means paging to it, and an item's timeline has no filter at all. A thread is short and a timeline is read in context, so the cost is low | Add the same `websearch_to_tsquery` filter the item list uses, over the comment body |
+| The activity views are not text-searchable | Neither view has a `q`. The team feed API can be narrowed by date range and actor, but finding an old *note* still means paging to it, and an item's timeline has no filter at all. A thread is short and a timeline is read in context, so the cost is low | Add the same `websearch_to_tsquery` filter the item list uses, over the comment body |
 | Activity rows are not pruned | `activity_events` grows with every mutation and is never archived. At demo scale it is thousands of rows; over years it would be the largest table | Partition by month, or archive closed items' history to cold storage |
 | A page reload signs the user out | The token is held in memory only, so the credential dies with the page. Deliberate: it is the only storage option where closing a tab destroys the token | `sessionStorage` if the reload cost outweighs the shorter exposure; `HttpOnly` cookies with `SameSite=Strict` plus an anti-CSRF token is the real production answer |
 | No member-management UI | The API supports adding, changing and removing members (admin only, with the last-admin and assigned-items rules enforced) but the interface has no screen for it. It is outside the work-item vertical slice | A team settings view; the endpoints and their tests already exist |
 | Optimistic updates only for the claim | A claim shows immediately and is rolled back on failure; transitions and edits wait for the server. Deliberate — see `ENGINEERING_DECISIONS.md` 24 | An optimistic transition would need a rollback that shows a workflow state nobody else saw; not planned |
+| The team activity UI has no actor picker | The API accepts an `actor` filter and the client's query builder carries it, but the feed view only exposes the date range | Add a member select that sets the existing `actor` query parameter |
 | The unread badge lags by up to 20 seconds | It polls one indexed count instead of holding a push channel open. A notification page opened immediately after an assignment may not show it yet | The page states the delay; server-sent events would remove it |
 | The item list has no sort control | The order is the server's `(created_at, id)` descending keyset order, which is what a keyset cursor requires. A different order needs a different cursor | A second ordered index and a sort parameter, with the order encoded in the cursor's kind |
 | Frontend tests stub the network | They prove the components' behaviour, not the wire format. The wire format is covered by a separate contract check against a running API rather than by CI | A browser-driven end-to-end test (Playwright) against a seeded database, run in CI |

@@ -10,7 +10,7 @@ frontend/
     api/          the HTTP client and the response types
     auth/         the session store, sign-in and sign-out
     components/   the shell and the four view states
-    features/     one directory per view: items, notifications, activity
+    features/     one directory per feature area: items, notifications, activity
     lib/          formatting, error explanations, the router, the role matrix
     query/        the TanStack Query client, its keys and its invalidation helpers
     test/         the fake network, fixtures and render helpers
@@ -78,9 +78,9 @@ locally maintained copy, and nothing is filtered or sorted in the browser.
   notification page says so rather than implying a live feed. There is no WebSocket, which the
   brief rules out, and no server-sent events, which would need the worker to signal the API
   process.
-- **A `401` from any request ends the session.** Handled once, in the query cache's `onError`,
-  so an expired token returns the user to the sign-in screen rather than leaving a page showing
-  an error it can never recover from.
+- **A `401` from any request ends the session.** One handler is registered on both the query and
+  mutation caches, so an expired token returns the user to the sign-in screen rather than leaving
+  a page showing an error it can never recover from.
 
 ## The activity feed says what it is about
 
@@ -90,10 +90,12 @@ spans many items, so the page passes `itemHref` and each row names the item's **
 as a link instead — otherwise the feed is a wall of "this item" rows with no way to tell them
 apart. The title is joined by the server at read time; the browser does not look items up.
 
-The feed is also filterable by date range and actor, both as server query parameters. The range
-is part of the query key, so changing it starts a new first page rather than filtering what is
-already loaded. "To 18 Oct" is sent as the last millisecond of that local day: a range control
-that silently drops its final day would be wrong, so the bounds are inclusive.
+The feed is filterable by date range in the UI, and the API also accepts an `actor` query
+parameter. This view does not expose an actor control yet; the client's query builder can carry
+one. The date range is part of the query key, so changing it starts a new first page rather
+than filtering what is already loaded. "To 18 Oct" is sent as the last millisecond of that local
+day: a range control that silently drops its final day would be wrong, so the bounds are
+inclusive.
 
 The rail beside each row carries a three-word legend — approved, sent back, status change. The
 text of the row says the same thing, so the colour is a reading aid rather than the only signal.
@@ -113,7 +115,7 @@ mutations is therefore **no retry**, and exactly two opt in:
 | --- | --- | --- |
 | Create a work item | Yes (2) | Carries an `Idempotency-Key`; a retry replays the first item |
 | Post a comment | Yes (2) | Same mechanism, same guarantee |
-| Claim | No | A retry after a success would come back `409` — the item is now owned |
+| Claim | No | A successful claim returns the current state; if somebody else won, a retry is `409`. The UI shows the server confirmation rather than retrying the action |
 | Transition | No | A retry after a success would come back `412` — the version moved |
 | Edit | No | Same |
 

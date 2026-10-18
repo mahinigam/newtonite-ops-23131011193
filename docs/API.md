@@ -31,7 +31,8 @@ A session ends when any of the following is true:
 | Idle for longer than the idle window (2 h) | `401 session_expired` |
 | The account was deactivated | `401 invalid_session` |
 
-`401` responses carry `WWW-Authenticate: Bearer`. Lifetimes are configuration
+`401` responses for a missing, invalid or expired session carry `WWW-Authenticate: Bearer`;
+`401 invalid_credentials` from `POST /auth/login` does not. Lifetimes are configuration
 (`SESSION_ABSOLUTE_TTL_HOURS`, `SESSION_IDLE_TTL_HOURS`). Both expiries are evaluated with
 the database clock. Every authenticated request refreshes the idle window, but the refresh is
 written at most once a minute per session, so the idle window can be enforced up to about a
@@ -85,7 +86,8 @@ only**: every write is authorized again on the server from stored data.
 ## Teams
 
 Team fields are prefixed (`team_id`, `team_key`) so a nested team can never be mistaken for the
-enclosing resource, and the shape is identical here and inside a membership.
+enclosing resource. `GET /teams` also includes `description`; the membership summary in
+`/auth/me` carries the same prefixed identifiers and role without it.
 
 ### `GET /teams`
 
@@ -238,7 +240,7 @@ request, so a tampered cursor cannot reach another team's data. A malformed curs
 | --- | --- |
 | `limit` outside 1–100 | `422 validation_failed` |
 | Malformed `cursor` | `422 validation_failed` |
-| `assignee` neither `me`, `none` nor a UUID | `422 validation_failed` |
+| `assignee` is a non-empty value other than `me`, `none` or a UUID | `422 validation_failed` |
 | Not a member of the team | `404 not_found` |
 
 ### `GET /me/items` — everything assigned to the caller
@@ -278,9 +280,11 @@ the caller does not belong to is `404`, byte-identical to an id that was never i
 ```
 
 Partial: only the fields actually present are applied, so an omitted field means *no
-opinion*. Sending a field as `null` **clears** it, which is how an item is unassigned or a
-due date removed. `status` is not editable here — status changes go through `transitions`
-below, so a generic edit cannot bypass approval or closure.
+opinion*. Sending a field as `null` **clears it** — this is supported for nullable fields
+(`assignee_id`, `due_at`), which is how an item is unassigned or a due date removed.
+Non-nullable fields (`title`, `description`, `type`, `priority`) reject `null` with
+`422 validation_failed`. `status` is not editable here — status changes go through
+`transitions` below, so a generic edit cannot bypass approval or closure.
 
 | Situation | Response |
 | --- | --- |
@@ -312,7 +316,7 @@ can pass while somebody else is claiming the same item.
 | Free and open | `200`, item assigned to the caller, version bumped, one `claimed` event |
 | Already owned by the caller | `200`, unchanged — a double-click is a no-op, not a second event |
 | Owned by somebody else | `409 item_already_claimed` |
-| Not open (for example already started) | `409 invalid_transition` |
+| Not open **and unassigned** (for example started, then unassigned) | `409 invalid_transition` |
 | Viewer, or not in the team | `403 forbidden` / `404 not_found` |
 
 Claiming sets the **assignee only**. It does not start the work; that is a separate,
@@ -361,8 +365,9 @@ recorded decision rather than an accident.
 Every item response carries an `ETag` of its `version`. A caller that wants to change the
 item sends that back as `If-Match`. The comparison and the `version = version + 1` happen in
 the **same `UPDATE`**, so two clients holding the same version cannot both succeed: the
-first wins, the second is told `412 stale_version` and given the current representation in
-`details.current` so it can refresh and retry. The precondition is deliberately
+first wins, the second is told `412 stale_version` and given a minimal reconciliation payload
+in `details.current` (`id`, `version`, `status`, `priority`, `assignee_id`, `updated_at`) so it
+can refresh and retry. The precondition is deliberately
 **required** rather than optional — an API that silently applies last-write-wins is exactly
 the failure mode the brief asks to avoid.
 
@@ -451,7 +456,7 @@ Each event is:
 {
   "id": 9041,
   "work_item_id": "…",
-  "event_type": "status_changed",
+  "event_type": "approved",
   "from_value": "awaiting_approval",
   "to_value": "resolved",
   "meta": {},
@@ -461,12 +466,14 @@ Each event is:
 }
 ```
 
-`from_value` and `to_value` hold the **stored** values and are the fact of the event — a
-status, a priority, a type, a title, or a user id for an assignment. `meta` is rendering
-convenience only (a display name, a rejection note, a comment id and a bounded preview), and
-a client must work without it. `event_type` is one of `created`, `claimed`, `assigned`,
-`unassigned`, `status_changed`, `approved`, `rejected`, `priority_changed`,
-`due_date_changed`, `type_changed`, `title_changed`, `description_changed`, `commented`.
+`from_value` and `to_value` hold the stored value where one exists — a status, a priority, a
+type, a title, or a user id for an assignment. Assignment and unassignment events use the
+previous/next assignee's **display name** in `from_value`/`to_value` rather than a user id, and
+`due_date_changed` carries an ISO date string or `null`. `meta` is rendering convenience only
+(a display name, a rejection note, a comment id and a bounded preview), and a client must work
+without it. `event_type` is one of `created`, `claimed`, `assigned`, `unassigned`,
+`status_changed`, `approved`, `rejected`, `priority_changed`, `due_date_changed`, `type_changed`,
+`title_changed`, `description_changed`, `commented`.
 
 `work_item_title` is the item's **current** title. It is present on the team feed, where a
 row would otherwise say only "this item", and `null` on an item's own timeline, which already
@@ -504,16 +511,19 @@ the range starts again from a null cursor.
 somebody outside the team therefore returns an empty page, not an error, and never another
 team's events.
 
-### Paging, and why the cursors are not interchangeable
+### Paging, and what the cursor is (and is not) tied to
 
-Both views are bounded (`limit` 1–100, default 25) and paged by keyset with an opaque
-`next_cursor`. A cursor belongs to **one list**: it names a position in a specific ordered
-result set, and the item lists, comment threads and activity timelines each have their own.
-Activity rows are keyed by a bigint identity while the other lists are keyed by a UUID, so a
-cursor issued for one list is rejected by another with `422 validation_failed` rather than
-being silently reused as a meaningless position. `has_more` answers "is there another page?"
-without a second request, and `limit` is echoed so a client can tell a short page from a
-clamped one.
+Every paginated list is bounded (`limit` 1–100, default 25) and paged by keyset with an opaque
+`next_cursor`. A cursor names a position in a specific ordered result set. Activity rows are
+keyed by a bigint identity while every other paginated list is keyed by a UUID. The id kind is
+checked at the boundary, so an activity cursor sent to a UUID-keyed list, or the reverse, is
+`422 validation_failed` instead of reaching SQL as a type mismatch. The UUID-keyed lists (team
+items, `/me/items`, comments and notifications) share the same syntax: a cursor from one is
+syntactically valid on another, but it names a different position, so clients must keep each
+cursor with the list that issued it. Mixing them yields a short or empty page, not access to
+rows the caller could not already read. `has_more` answers "is there another page?" without a
+second request, and `limit` is validated (1–100) and echoed; values outside the range are
+`422 validation_failed`, so there is no clamped page.
 
 ## Notifications
 
@@ -559,9 +569,10 @@ reading the delivery records about it, and each list has its own cursor.
 
 ### `GET /ops/outbox` — team admin only
 
-Delivery counts for the teams the caller administers. It exists because asynchronous
-delivery introduces a failure mode a synchronous version would not have: an event can be
-queued and never delivered. Making it visible is what keeps that acceptable.
+Delivery counts for the teams the caller administers **that have at least one outbox event**.
+It exists because asynchronous delivery introduces a failure mode a synchronous version would not
+have: an event can be queued and never delivered. Making it visible is what keeps that
+acceptable.
 
 ```json
 {
@@ -605,7 +616,9 @@ shape:
 
 `code` is stable and is what a client should branch on. `message` is written to be shown to a
 user and never contains a stack trace, SQL, a table name or a constraint name. `details` is
-present only for validation failures and lists the offending fields.
+optional and code-specific: request-validation failures list offending fields, `stale_version`
+carries a minimal `current` row, and `invalid_transition` names the current status and the
+transitions available to this caller.
 
 | Status | Codes | Meaning |
 | --- | --- | --- |
@@ -614,7 +627,7 @@ present only for validation failures and lists the offending fields.
 | `403` | `forbidden` | You are in this team, but your role does not permit it |
 | `404` | `not_found` | Does not exist, **or** belongs to a team you are not in |
 | `409` | `invalid_transition`, `item_already_claimed`, `idempotency_key_reuse`, `idempotency_key_in_progress`, `assignee_required`, `last_admin`, `member_has_assigned_items` | Conflicts with current state |
-| `412` | `stale_version` | Your `If-Match` version is out of date; `details.current` carries the current item |
+| `412` | `stale_version` | Your `If-Match` version is out of date; `details.current` carries the minimal current row |
 | `422` | `validation_failed`, `invalid_assignee` | The request body or a parameter failed validation |
 | `428` | `precondition_required` | A conditional request arrived without `If-Match` |
 | `500` | `internal_error` | Unexpected. The detail is logged, never returned |

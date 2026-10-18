@@ -61,7 +61,7 @@ assignment and a deploy never silently stops delivery. The reasoning is in
 | Alembic migration workflow with a model/migration drift check | Working |
 | Schema for users, teams, memberships, work items, comments, activity events, sessions, idempotency keys | Working |
 | Database-enforced invariants (team/assignee consistency, append-only history, value sets) | Working, tested |
-| Deterministic, idempotent demo seed (~3 000 work items, 12 users, 4 teams) | Working |
+| Deterministic, idempotent demo seed (3 000 work items, 12 users, 4 teams) | Working |
 | Indexes matched to query patterns, with measured plans | Working — see [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md) |
 | Login, logout and session validation (Argon2id, hashed tokens, absolute + idle expiry, revocation) | Working |
 | Per-team authorization with an explicit role matrix, enforced on the server | Working |
@@ -87,9 +87,9 @@ assignment and a deploy never silently stops delivery. The reasoning is in
 | Sign-in, team switcher, item list with server-side filters and cursor paging | Working |
 | Item detail: claim, workflow moves, edit, comments, history | Working |
 | Optimistic claim with tested rollback and reconciliation to the server's state | Working, tested |
-| Team activity feed: names and links each row's item, date-range and actor filters, paged with its own cursor | Working |
+| Team activity feed: names and links each row's item, date-range filters in the UI and an additional `actor` filter on the API, paged with its own cursor | Working |
 | Loading, empty, error and conflict states on every server-backed view | Working |
-| Backend test suite against real PostgreSQL | Working (236 tests) |
+| Backend test suite against real PostgreSQL | Working (237 tests) |
 | Frontend test suite (vitest + React Testing Library) | Working (83 tests) |
 | One-command stack: `docker compose up --build` runs database, API, worker and web | Working, verified end to end |
 | Docker Compose PostgreSQL for reviewers | Working |
@@ -104,7 +104,7 @@ rather than take it on trust.
 
 | Behaviour | The test that proves it | The reasoning |
 | --- | --- | --- |
-| **Two concurrent claims produce at most one owner** | `tests/test_claim.py`, `tests/test_items_concurrency.py` — two `POST /claim` calls are issued concurrently on separate connections; exactly one returns `200` | [`ENGINEERING_DECISIONS.md`](ENGINEERING_DECISIONS.md) 5, [`docs/API.md`](docs/API.md) |
+| **Two concurrent claims produce at most one owner** | `tests/test_items_concurrency.py` — two `POST /claim` calls are issued concurrently on separate connections; exactly one returns `200` | [`ENGINEERING_DECISIONS.md`](ENGINEERING_DECISIONS.md) 5, [`docs/API.md`](docs/API.md) |
 | **A write based on a stale version is refused, not applied** | `tests/test_items_update.py`, `tests/test_transitions.py` — a `PATCH` with an old `ETag` returns `412` and the stored row is unchanged | [`ENGINEERING_DECISIONS.md`](ENGINEERING_DECISIONS.md) 6 |
 | **A retried request cannot create a duplicate** | `tests/test_items_create.py`, `tests/test_comments.py` — the same `Idempotency-Key` twice creates one row and replays the first result; a different payload under the same key returns `409` | [`ENGINEERING_DECISIONS.md`](ENGINEERING_DECISIONS.md) 7 |
 | **Workflow and role rules are enforced on the server** | `tests/test_transitions.py`, `tests/test_authorization.py` — invalid transitions are refused, a viewer cannot write, and another team's item is a `404` | [`ENGINEERING_DECISIONS.md`](ENGINEERING_DECISIONS.md) 8, 11, 12 |
@@ -133,6 +133,7 @@ sections) — the scripts are not committed, but the commands and the observed r
 - [`uv`](https://docs.astral.sh/uv/) — installs Python 3.12 and the locked dependencies.
 - PostgreSQL 16 — either a local server or the bundled Docker Compose service.
 - Docker (for the Compose database, or for the one-command stack).
+- Node.js `>=20.19` and npm — only for the manual frontend path (`npm ci`, `npm run dev`); the Docker one-command stack does not need them.
 
 ## One command: the whole stack
 
@@ -278,7 +279,10 @@ The full endpoint list is in [`docs/API.md`](docs/API.md).
 ### 6. Create, claim and move a work item
 
 The three headers that carry the correctness guarantees, in one sequence. Everything below
-runs against a seeded database; replace `<TEAM_ID>` with a team from `/auth/me`.
+runs against a seeded database. Sign in as `sam.multi`, who is a member of the **platform**
+team, and replace `<TEAM_ID>` with that team's id from `/auth/me` (its `team_key` is
+`platform`). Claiming and editing work there are allowed for a member; the later assignment
+uses the platform lead's token.
 
 ```bash
 # Create — Idempotency-Key is required, so a retry cannot make a second item.
@@ -286,7 +290,7 @@ ITEM=$(curl -s -X POST "http://localhost:8000/api/v1/teams/<TEAM_ID>/items" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -H "Idempotency-Key: $(uuidgen)" \
   -d '{"title":"Refund the duplicate charge","type":"payment","priority":"urgent"}')
-echo "$ITEM"                       # 201, with an ETag
+echo "$ITEM"                       # 201 plus the item JSON; the ETag is in the headers
 ID=$(echo "$ITEM" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 
 # Claim — atomic. No If-Match: the race is decided by assignee_id IS NULL inside the UPDATE.
@@ -337,10 +341,21 @@ the outbox. The worker must be running — step 9 starts it, or use `make worker
 `<NINA_USER_ID>` with Nina's `user_id` from `/api/v1/teams/<TEAM_ID>/members`.
 
 ```bash
-# A lead assigns an item to somebody else. The assignment and the outbox event are written
-# in one transaction; the event is not delivered by this request.
+# The platform lead and Nina sign in separately; requests act as their own user.
+LEAD_TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"lena.lead@newtonite.dev","password":"Newtonite!2026"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+NINA_TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"nina.member@newtonite.dev","password":"Newtonite!2026"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+
+# A lead assigns an item to somebody else. Assigning another user requires the lead role;
+# the assignment and the outbox event are written in one transaction, and the event is not
+# delivered by this request. The item version is 4 after create, claim, edit and transition.
 curl -s -X PATCH "http://localhost:8000/api/v1/items/$ID" \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $LEAD_TOKEN" -H 'Content-Type: application/json' \
   -H 'If-Match: "4"' -d '{"assignee_id":"<NINA_USER_ID>"}'
 
 # A moment later, Nina's own token sees it.
@@ -422,13 +437,13 @@ The backend suite runs against `TEST_DATABASE_URL` and applies migrations to hea
 no manual preparation is needed beyond creating the empty `newtonite_test` database. The
 frontend suite needs no database: it stubs `fetch`, so it runs in about two seconds.
 
-Current totals, from the commands above: **236 backend tests** in under a minute and **83
+Current totals, from the commands above: **237 backend tests** in under a minute and **83
 frontend tests** in about 2 s. The suites that carry the domain guarantees are worth opening
 first:
 
 | Suite | What it proves |
 | --- | --- |
-| `tests/test_claim.py`, `tests/test_items_concurrency.py` | two concurrent claims, one owner |
+| `tests/test_items_concurrency.py` | two concurrent claims, one owner |
 | `tests/test_items_update.py`, `tests/test_transitions.py` | stale versions refused; illegal transitions refused |
 | `tests/test_items_create.py`, `tests/test_comments.py`, `tests/test_items_concurrency.py` | retries cannot duplicate; payload reuse is rejected |
 | `tests/test_authorization.py`, `tests/test_auth.py` | cross-team and role boundaries, including the last-admin rule |
@@ -471,7 +486,7 @@ frontend/
     api/              the HTTP client and the response types
     auth/             the in-memory session store, sign-in and sign-out
     components/       the shell and the four view states
-    features/         one directory per view: items, notifications, activity
+    features/         one directory per feature area: items, notifications, activity
     lib/              formatting, error explanations, the router, the role matrix
     query/            the TanStack Query client, its keys and its invalidation helpers
     test/             the fake network, fixtures and render helpers

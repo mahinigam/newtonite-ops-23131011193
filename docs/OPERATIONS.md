@@ -78,9 +78,9 @@ What it does, and what to check when it misbehaves:
 | --- | --- |
 | `outbox worker started (batch=…, poll=…)` | The process is running and has a database connection |
 | Nothing is logged while the queue is empty | Normal: an idle poll is silent |
-| `notification delivery failed` at `WARNING` | One attempt failed; the event was rescheduled with backoff |
-| `outbox event exhausted its attempts` at `ERROR` | The event is now `failed` and will not be retried |
-| The process exits non-zero at start | The database is unreachable, or migrations have not been applied |
+| `outbox event <id> (<type>) attempt <n>/<max> failed, retrying` at `WARNING` | One attempt failed; the event was rescheduled with backoff |
+| `outbox event <id> (<type>) failed permanently after <n> attempt(s)` at `ERROR` | The event is now `failed` and will not be retried |
+| `outbox batch failed; retrying after the poll interval` repeats at `ERROR` | In polling mode the worker keeps retrying a connection-level failure; `--once` exits non-zero instead |
 
 Delivery counts per team are readable by a team admin:
 
@@ -114,7 +114,7 @@ no-op.
 | Tests wipe unexpected data | `TEST_DATABASE_URL` points at a database you care about. Stop, fix the URL, and restore from a backup |
 | `alembic check` reports differences | A model changed without a migration (or vice versa). Create a revision and review it |
 | `activity_events is append-only` | Something tried to `UPDATE`/`DELETE` history. That is the intended behaviour |
-| Login works, then every request returns `401 session_expired` | The session hit its absolute or idle lifetime. Lifetimes are `SESSION_ABSOLUTE_TTL_HOURS` / `SESSION_IDLE_TTL_HOURS`; check the host clock, because a large skew from the database makes freshly issued sessions look stale |
+| Login works, then every request returns `401 session_expired` | The session hit its absolute or idle lifetime. Lifetimes are `SESSION_ABSOLUTE_TTL_HOURS` / `SESSION_IDLE_TTL_HOURS`; both are evaluated with PostgreSQL `now()`, so check the database clock rather than the API host clock |
 | Login returns `401 invalid_credentials` for an account you can see in `psql` | The password is wrong, or the account is deactivated (`is_active = false`). The response is deliberately identical in both cases |
 | A user's role change does not take effect | It does, from their next request — roles are read from `memberships` every request and are not stored in the session |
 | Port 5432 already in use by a local PostgreSQL | Compose maps its database to 5433 precisely to avoid this; use the 5433 URL from `README.md` step 2 |
@@ -128,11 +128,15 @@ Logs are written to standard error at the level set by `LOG_LEVEL`. Set `LOG_LEV
 > databases created by the steps in `README.md`. Never run them against a database that
 > holds data you want to keep, and never against a shared or production environment.
 
-Reset the test database schema only (disposable by definition):
+Reset the test database schema only (disposable by definition). Alembic reads
+`DATABASE_URL`, so override it for these commands; `TEST_DATABASE_URL` is the variable the
+test suite itself uses:
 
 ```bash
 cd backend
-uv run alembic downgrade base && uv run alembic upgrade head
+TEST_URL="postgresql+asyncpg://newtonite:newtonite_dev_pw@127.0.0.1:5432/newtonite_test"
+DATABASE_URL="$TEST_URL" uv run alembic downgrade base
+DATABASE_URL="$TEST_URL" uv run alembic upgrade head
 ```
 
 Rebuild both local schemas from scratch:
@@ -140,14 +144,21 @@ Rebuild both local schemas from scratch:
 ```bash
 psql -h 127.0.0.1 -U newtonite -d newtonite      -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'
 psql -h 127.0.0.1 -U newtonite -d newtonite_test -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'
-cd backend && uv run alembic upgrade head
+cd backend
+uv run alembic upgrade head
+TEST_URL="postgresql+asyncpg://newtonite:newtonite_dev_pw@127.0.0.1:5432/newtonite_test"
+DATABASE_URL="$TEST_URL" uv run alembic upgrade head
 ```
+
+Use the Compose database's port (`5433`) in these commands if you are not using the
+host-native PostgreSQL on `5432`. Running the test suite also migrates an empty test database
+as part of its session setup.
 
 Verify which database you are about to affect before running anything destructive:
 
 ```bash
-# Replace 5432 with 5433 if you use the Compose database, and use the credentials
-# from your own .env if they differ from the development defaults.
+# Use 5433 for the Compose database, 5432 for a local PostgreSQL; use the
+# credentials from your own .env if they differ from the development defaults.
 psql "postgresql://newtonite:newtonite_dev_pw@127.0.0.1:5432/newtonite" \
   -c 'SELECT current_database(), current_user;'
 ```

@@ -28,7 +28,7 @@ Two supporting modules sit across those layers:
 
 | Module | Responsibility |
 | --- | --- |
-| `app/policy/` | The role matrix (`roles.py`), the authenticated caller (`principal.py`), and the work-item state machine (`workflow.py`). The only place a role is compared and the only place a transition is declared legal. |
+| `app/policy/` | The role matrix (`roles.py`), the authenticated caller (`principal.py`), and the work-item state machine (`workflow.py`). The matrix is the single source for permission checks; the last-admin rule (`services/memberships.py`) and the admin gate on `/ops/outbox` are narrow role-specific rules over the same data. `workflow.py` is the only place a transition is declared legal. |
 | `app/errors.py` | The exception types and the single HTTP error envelope. |
 | `app/api/preconditions.py` | `ETag` construction and `If-Match` parsing — the HTTP spelling of an optimistic-concurrency check, in one place. |
 | `app/services/outbox.py` | Enqueueing an event inside the caller's transaction, and the worker's claim/retry bookkeeping. |
@@ -101,17 +101,19 @@ item id is, and an id is what a client actually holds.
    fields are all optional *and* tri-state: a field that is absent means "no opinion", while an
    explicit `null` means "clear it". `model_fields_set` is what distinguishes them, so an
    empty patch and a clearing patch are different requests.
-2. **Precondition.** The `If-Match` header is parsed to a version integer. Absent → `428`.
-   Unparseable → `422`. This happens before any database read, so a request that cannot be
-   applied never touches the row.
-3. **Authentication**, as above.
+2. **Authentication**, as above. FastAPI resolves the authenticated principal before the handler
+   body runs.
+3. **Precondition.** The `If-Match` header is parsed to a version integer. Absent → `428`.
+   Unparseable → `422`. This happens before the item row is read, so a request that cannot be
+   applied never touches the item.
 4. **Authorization from the row, not the request.** The service loads the item and derives the
    team **from the item's own `team_id`**, then checks membership against that. An item in
    another team is indistinguishable from a missing one: `404`, with no existence leak. The
    path never carries a team id for a write, so there is nothing to lie about.
-5. **Business rules.** The workflow module is consulted for role-dependent field rules: moving
+5. **Business rules.** The work-item service enforces role-dependent field rules: moving
    work to or from *somebody else* needs `assign others`, while taking an unassigned item is a
-   claim. `status` is not a field of this request at all.
+   claim. `app/policy/workflow.py` owns only status transitions. `status` is not a field of
+   this request at all.
 6. **Persistence, once.** The version comparison and `version = version + 1` are in the same
    `UPDATE`. Field-change events are inserted in the same transaction through
    `services/activity.py`, which shares the session. Either the state change and its history
@@ -164,8 +166,8 @@ not the discussion.
 | One winner per claim | SQL predicate `assignee_id IS NULL AND status = 'open'` inside the `UPDATE` | The database decides the race while it holds the row lock; no window exists |
 | One item per retried create | Unique `(actor_id, operation, key)` on `idempotency_keys`, written in the item's transaction | A concurrent duplicate blocks on the index and then replays the stored outcome |
 | History cannot diverge from state | One session, one transaction, `services/activity.py` | Proven by breaking the insert on purpose (`tests/test_activity_atomicity.py`) |
-| Who may read an item's comments or timeline | `Principal.require_item_access` in `services/comments.py` and `services/activity.py` | The team comes from the item's own row, so the same rule cannot be forgotten by one of the readers |
-| Which list a cursor belongs to | `decode_cursor(..., id_kind=...)` at each route | A cursor names a position in one ordered result set; the id kind is the discriminator that refuses a cursor from another list |
+| Who may read an item's comments or timeline | `require_item_access` in `app/policy/principal.py`, called by `services/work_items.py` and `services/activity.py`; comments go through `work_items.load_visible_item` | The team comes from the item's own row, so the same rule cannot be forgotten by one of the readers |
+| Which list a cursor belongs to | `decode_cursor(..., id_kind=...)` at each route | The id kind is the hard boundary: activity uses a bigint, while item, comment and notification lists use UUIDs. UUID-keyed lists share a syntax, so the client must keep each cursor with its list; mixing them names a different position, not a security boundary |
 | Comments are append-only | No route exists; the `activity_events` trigger covers history | A missing route cannot be bypassed, and the history behind a comment is protected by the database |
 | A notification is owed the moment the change commits | `outbox_events` written by `services/outbox.py` in the caller's transaction | The queue row and the state change share a commit, so they cannot disagree |
 | One event produces at most one notification | `UNIQUE(notifications.outbox_event_id)` + `ON CONFLICT DO NOTHING` | At-least-once delivery is safe because the effect is made idempotent by the database, not by the handler |

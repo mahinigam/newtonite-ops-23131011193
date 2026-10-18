@@ -10,10 +10,11 @@ The position is the pair `(created_at, id)`. `id` is what makes it a *total* ord
 items created in the same microsecond still have exactly one correct sequence.
 
 Most tables are keyed by a UUID, but `activity_events` uses a bigint identity, so the id
-half of a cursor is parsed as whichever the list says it is. That is what stops a cursor
-issued for one list from being accepted by another and reaching SQL as a `bigint < uuid`
-comparison: the wrong kind is a validation error at the boundary. Cursors are per-list,
-which is what "activity paginates independently of item lists" means in practice.
+half of a cursor is parsed as whichever the list says it is. A cursor with the wrong kind is
+a validation error at the boundary instead of reaching SQL as a `bigint < uuid` comparison.
+UUID-keyed lists share a syntax and are structurally interchangeable, so clients must keep
+each cursor with the list that issued it; that is what "activity paginates independently of
+item lists" means in practice.
 
 The cursor is base64url so that clients treat it as opaque. It is not signed: it contains
 no secret and no permission decision, only a position within a result set the caller is
@@ -37,7 +38,7 @@ _SEPARATOR = "|"
 
 #: Which flavour of id a cursor carries. Every paginated table is keyed by a UUID except
 #: `activity_events`, which uses a bigint identity. A cursor has to say which it is, so a
-#: cursor from one list is refused by another at the boundary instead of reaching SQL as a
+#: cursor with the wrong kind is refused at the boundary instead of reaching SQL as a
 #: `bigint < uuid` comparison.
 IdKind = Literal["uuid", "int"]
 
@@ -61,7 +62,11 @@ def _parse_id(text: str, id_kind: IdKind) -> uuid.UUID | int:
         except ValueError as exc:
             raise ValidationFailed("The pagination cursor is not valid.") from exc
     if text.isascii() and text.isdigit():
-        return int(text)
+        value = int(text)
+        # PostgreSQL bigint is signed 64-bit; reject values outside that range
+        if value < -9223372036854775808 or value > 9223372036854775807:
+            raise ValidationFailed("The pagination cursor is not valid.")
+        return value
     raise ValidationFailed("The pagination cursor is not valid.")
 
 
@@ -70,8 +75,9 @@ def decode_cursor(value: str, *, id_kind: IdKind) -> Cursor:
 
     A malformed cursor is the caller's mistake and is reported as such rather than
     being silently ignored, which would quietly restart the list from the beginning. The
-    same is true of a *well-formed* cursor from a different list: it is refused, because
-    the two lists do not share a position.
+    same is true of a *well-formed* cursor whose id kind does not match. UUID-keyed lists
+    share a syntax, so a cursor from one is structurally valid on another but names a
+    different position; clients must keep each cursor with its list.
     """
     padded = value + "=" * (-len(value) % 4)
     try:

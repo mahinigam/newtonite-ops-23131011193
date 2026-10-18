@@ -4,7 +4,7 @@ A truthful, phase-by-phase record. "Verified" means the listed command was run a
 result observed in this repository — not that the code looks correct.
 
 **Current branch:** `main`; all phases are merged. The phase branches remain in the history.
-**Last updated:** 2026-10-19 (final compliance pass)
+**Last updated:** 2026-10-19 (final compliance and documentation accuracy pass)
 
 ## Phase summary
 
@@ -141,10 +141,11 @@ application; indexes match the query patterns.
   activity history.
 - `backend/app/security/passwords.py` — Argon2id hashing, plus a constant-time path for
   the "account does not exist" login case.
-- `backend/tests/test_seed.py` — 10 tests covering determinism, idempotency and data
+- `backend/tests/test_seed.py` — 9 tests covering determinism, idempotency and data
   coherence.
-- `backend/tests/test_index_inventory.py` — 16 tests asserting every index and named
-  constraint exists with the intended shape.
+- `backend/tests/test_index_inventory.py` — 16 tests at this phase (17 today, after the
+  notification indexes were added) asserting every index and named constraint exists with the
+  intended shape.
 - `docs/DATA_MODEL.md` — the data model, the rule-to-mechanism table, the index rationale,
   and measured query plans.
 - A `make seed` target, and CI steps that migrate and seed a clean database before testing.
@@ -755,8 +756,8 @@ so every load-bearing claim was checked against the running system rather than r
 | Every gate at once | `make check` | Backend lint + format + types + **229 tests**, frontend lint + types + **79 tests**, production build |
 | Production build | `npm run build` | Passed — 306.21 kB JS (91.24 kB gzip), 10.56 kB CSS (2.65 kB gzip) |
 | Migration drift | `uv run alembic check` | "No new upgrade operations detected" |
-| Container stack, built and run | `docker compose up --build` | Four services healthy; API `/readyz` green; worker started and idle |
-| Real-HTTP checks through the container's nginx origin | scripted against `http://localhost:8080` | **26/26 passed** — proxied health, login, claim and its `ETag`, assignment, worker delivery, notification list and count, acknowledgement, `/me/items`, cross-team `404`, stale `412`, activity |
+| Container stack, built and run | `docker compose up --build` | All four services running; `db` and `api` report healthy; API `/readyz` green; worker started and idle |
+| Real-HTTP checks through the container's nginx origin | manually verified against `http://localhost:8080` | **26/26 passed** — proxied health, login, claim and its `ETag`, assignment, worker delivery, notification list and count, acknowledgement, `/me/items`, cross-team `404`, stale `412`, activity |
 | Earlier end-to-end suites | The Phase 5 suite (67) and the Phase 6 contract suite (41) | **108/108 passed** on the merged `main` before this phase's changes |
 | Fresh clone from GitHub | `git clone`, `make setup`, `make migrate`, `make seed ITEMS=50` into an empty database, `make check`, then the API and the worker on `:8011` | Migrations `0001`→`0003` and 50 items from scratch; 229 + 79 tests green; **32/32** HTTP checks — idempotent replay, a claim followed by a transition using the claim's `ETag`, an illegal transition, a missing precondition, worker delivery, unread count, acknowledgement, `/me/items`, cursor paging, cross-team `404`, stale `412`, and the `/ops/outbox` role gate |
 
@@ -842,8 +843,9 @@ the one earlier test this phase touched (`ItemDetailPage`'s activity stub) gaine
 fixture and kept its empty-page default. The retry test is three pages deep specifically so
 that `refetch()` would fail it.
 
-**Counts.** The totals are now **234 backend** and **83 frontend**. Earlier phase records keep
-the counts they observed when they were run.
+**Counts.** The totals were **234 backend** and **83 frontend** at the end of Phase 9. Earlier
+phase records keep the counts they observed when they were run; the final compliance pass below
+supersedes this total.
 
 ## Final compliance pass — 19 October 2026
 
@@ -866,18 +868,19 @@ fixed four documentation/config gaps:
   uses a concrete `psql` URL, and the diagnosis row names the local PostgreSQL correctly.
 
 **Verification.** `make check` — ruff format and check, mypy (89 files), eslint,
-`tsc --noEmit`, **236 backend tests**, **83 frontend tests**, and the production build all
-passed. The 2 added tests are `tests/test_cors.py`; no existing test or assertion was
-weakened. A fresh-clone check follows in the submission verification below.
+`tsc --noEmit`, **237 backend tests**, **83 frontend tests**, and the production build all
+passed. The added tests are `tests/test_cors.py` (2) and the readiness-outage test in
+`tests/test_health.py` (1); no existing test or assertion was weakened. A fresh-clone check
+follows in the submission verification below.
 
 ## Submission verification — 19 October 2026
 
 | Check | Command | Result |
 | --- | --- | --- |
-| All gates | `make check` | Passed — 236 backend, 83 frontend, ruff, mypy, eslint, tsc, build |
+| All gates | `make check` | Passed — 237 backend, 83 frontend, ruff, mypy, eslint, tsc, build |
 | Repository visibility | GitHub API | Public, default branch `main` |
 | Secrets | tracked-file and history scan | Only placeholder `.env.example` values; no PDFs or real credentials tracked |
-| Clean clone | `git clone` into an empty directory, then `docker compose up --build` | See the fresh-clone result recorded with the final commit |
+| Clean clone | `git clone` into an empty directory, then `docker compose up --build` | Not run for current HEAD (last run at `2579a8c`: 229+79 tests, 32/32 HTTP checks) |
 | Browser CORS contract | `tests/test_cors.py` | Preflight allows `PUT` and conditional headers; response exposes `ETag`, `Location`, `Idempotent-Replay` |
 
 ## How to read this document

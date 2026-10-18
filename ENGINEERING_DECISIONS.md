@@ -352,9 +352,10 @@ roles.
 
 **Consequences and verification.** `tests/test_authorization.py`: a viewer cannot escalate
 anyone's role, a member cannot promote themselves, a lead cannot manage members, an admin can,
-and an admin of one team is answered with 404 for another team's roster. The permission table is
-also what the frontend will read via `/auth/me` — advisory only, since every write is checked
-again.
+and an admin of one team is answered with 404 for another team's roster. The frontend reads the
+caller's roles from `/auth/me` and mirrors the permission matrix in
+`frontend/src/lib/permissions.ts`; that copy is advisory only, since every write is checked
+again on the server.
 
 ---
 
@@ -563,10 +564,10 @@ the assignee keeps the item — a rejection returns the work, it does not orphan
 
 **Consequences and verification.** `tests/test_transitions.py`: the whole journey
 `open → closed` with each step attributed to the right actor in the history; a member refused
-at approval and at closure (`403`); `assignee_required` when starting unowned work; an illegal
-jump naming the reachable statuses; `closed` terminal for all four targets; stale `412`;
-missing `428`; cross-team `404`; an unknown target `422`; and two leads approving
-concurrently, where one wins and one gets `412` with a single `approved` event.
+at approval and at closure (`403`); an illegal jump naming the reachable statuses; `closed`
+terminal for all four targets; stale `412`; missing `428`; cross-team `404`; an unknown target
+`422`; and two leads approving concurrently, where one wins and one gets `412` with a single
+`approved` event. `tests/test_claim.py` covers `assignee_required` when starting unowned work.
 
 **Closure ends the workflow, not the discussion** (added in Phase 5). A comment on a closed
 item is accepted, because a closed item is a record and the reason it closed is exactly the
@@ -787,9 +788,9 @@ editable by the very clients it is meant to hold to account.
 
 Reading history requires `VIEW_TEAM`, so a viewer may read it: the timeline names people and
 describes changes, but it is the team's own record, and hiding it from the person who is meant
-to be able to see the work would be arbitrary. The team feed is built from the event's
-denormalised `team_id`, so it needs no join back to `work_items` and cannot be assembled by a
-query that forgot the team filter.
+to be able to see the work would be arbitrary. The team feed is filtered by the event's
+denormalised `team_id`, so it cannot be assembled by a query that forgot the team filter; it
+joins `work_items` only to read the current title shown on each row.
 
 **Trade-offs.**
 
@@ -798,19 +799,21 @@ query that forgot the team filter.
 - Accepted: history is never redacted or amended. If an item moves to another team — which the
   API does not allow today — the existing events keep the team they were written with.
 
-**Consequences and verification.** `tests/test_activity_api.py` (13 tests): the timeline is
-newest first and carries the stored values; the team feed covers the whole team and no other;
-a viewer reads and a non-member gets a `404` identical to an unknown id; a long timeline pages
+**Consequences and verification.** `tests/test_activity_api.py` (18 tests): the timeline is
+newest first and carries the stored values; the team feed covers the whole team and no other,
+names each row's current item title, and accepts inclusive date bounds and an actor filter; a
+viewer reads and a non-member gets a `404` identical to an unknown id; a long timeline pages
 without duplicates or gaps, including when every row shares a timestamp; and `POST`, `PATCH`,
 `DELETE` and `PUT` on either view are `405`.
 
 ---
 
-## 18. Each list has its own cursor, and the id kind is what enforces it
+## 18. Each list has its own cursor; the id kind is the hard boundary
 
-**Context.** There are now four paginated lists: team items, a team's activity, an item's
-comments and an item's timeline. They all page the same way — keyset on `(created_at, id)` —
-so a cursor is structurally interchangeable between them.
+**Context.** When this decision was written there were four paginated lists: team items, a
+team's activity, an item's comments and an item's timeline. Later phases added `/me/items` and
+notifications, so there are now six. They all page the same way — keyset on `(created_at, id)` —
+so a cursor is structurally interchangeable between lists that use the same id kind.
 
 **Options considered.**
 
@@ -828,8 +831,9 @@ position that is *meaningful* in one list and *silently wrong* in another is wor
 that is refused. Option 2 is more machinery than the problem needs — a list label would have
 to be invented and kept in sync with the routes — when the id type already distinguishes the
 activity views from everything else, for a real reason (the table's key) rather than a
-decorative one. The important property is that a cursor is refused by the wrong list; the id
-kind achieves it without a new identifier to maintain.
+decorative one. The important property is that a cursor with the wrong id kind is refused at
+the boundary; UUID-keyed lists share a syntax, so a mixed-up cursor there is a short page, not
+a leak, and needs no new identifier to maintain.
 
 **Trade-offs.**
 
@@ -846,8 +850,9 @@ kind achieves it without a new identifier to maintain.
 
 **Consequences and verification.** `tests/test_activity_api.py` asserts that an item-list
 cursor is `422` on the activity endpoint, and `tests/test_items_list.py` still covers the
-malformed-cursor and bounds cases. The end-to-end pass exercises the cross-list case over real
-HTTP, and `docs/DATA_MODEL.md` records the plan for each of the four lists.
+malformed-cursor and bounds cases. The end-to-end pass exercises the cross-kind case over real
+HTTP, and `docs/DATA_MODEL.md` records the measured list plans, including `/me/items`; the
+notification indexes are covered by the index inventory rather than query timings.
 
 ---
 
@@ -901,12 +906,11 @@ which is the opposite of forcing stale local data onto the server.
 - Accepted: more cache plumbing — `putItem`, `refreshItem` and `invalidateItemViews` rather than
   one `invalidateQueries` call — because the two cases genuinely differ.
 
-**Consequences and verification.** `ItemDetailPage.test.tsx` asserts that a transition adopts
-the version **from the response** (and that no second read was needed), that a `412` says the
-change "was not applied" and offers a reload, that a viewer is offered no moves, and — since
-decision 24 — that an optimistic claim is provisional, rolls back on `409`, and hands the next
-write the version the claim produced. `ItemListPage.test.tsx` asserts that a filter change is a
-new server query rather than a filter over loaded rows.
+**Consequences and verification.** `ItemDetailPage.test.tsx` asserts that a claim adopts the
+version from its response and hands it to the next write, that a `412` says the change "was not
+applied" and offers a reload, that a viewer is offered no moves, and — since decision 24 — that
+an optimistic claim is provisional and rolls back on `409`. `ItemListPage.test.tsx` asserts
+that a filter change is a new server query rather than a filter over loaded rows.
 
 ---
 
@@ -935,10 +939,10 @@ sufficient to destroy the credential.
 Option 4 is the genuinely different one: script cannot read an `HttpOnly` cookie. But a cookie
 the browser attaches automatically is a CSRF vector, and closing that requires a token,
 `SameSite` configuration and care with cross-origin requests. The project chose the weakness it
-mitigates with controls it actually implements — no HTML injection anywhere, a strict CSP
-documented in `OPERATIONS.md`, short session lifetimes and immediate revocation — over the one
-that needs machinery it has not built. That reasoning, including why the alternatives are not
-simply "worse", is in `docs/SECURITY.md`.
+mitigates with controls it actually implements — no HTML injection anywhere, short session
+lifetimes and immediate revocation — and documents a strict CSP as a deployment step in
+`OPERATIONS.md`. It did not choose the cookie option that needs machinery it has not built.
+That reasoning, including why the alternatives are not simply "worse", is in `docs/SECURITY.md`.
 
 **Trade-offs.**
 
@@ -947,8 +951,8 @@ simply "worse", is in `docs/SECURITY.md`.
   the price is small — but it is a price, not a free win. An application where a lost page means
   lost work should choose `sessionStorage` instead.
 - Accepted: no "remember me". There is no long-lived credential to remember.
-- Accepted: the interface must handle a `401` from anywhere, which it does in one place (the
-  query cache's `onError`).
+- Accepted: the interface must handle a `401` from anywhere, which it does in one handler
+  registered on both the query and mutation caches.
 
 **Consequences and verification.** `client.test.ts` asserts the token is attached only once a
 session exists, and that a `401` is flagged as an authentication failure;
@@ -960,8 +964,9 @@ memberships cannot be read, which is the case a naive implementation gets wrong.
 
 ## 21. Retries are opt-in, and only where the server can recognise them
 
-**Context.** TanStack Query retries failed mutations by default. For this API that default is
-wrong in one direction and unhelpful in the other.
+**Context.** TanStack Query's mutation default is `retry: 0`, but relying on a library default
+for a correctness property is fragile. For this API, retrying a write is safe only when the
+server can recognise it.
 
 **Options considered.**
 
@@ -972,11 +977,11 @@ wrong in one direction and unhelpful in the other.
 **Choice.** Option 3. The default is `retry: 0`, and `CreateItemForm` and `CommentThread` opt in
 with `retry: 2`.
 
-**Why.** A retried claim, after the first attempt succeeded, comes back `409` — the item is now
-owned. A retried transition comes back `412` — the version moved. Retrying those does not make
-the application more reliable; it converts a successful operation into an error message. A
-retried create or comment is the opposite: the server holds an `Idempotency-Key` row and replays
-the original result, so the retry is *free* and the user never sees the blip.
+**Why.** A retried claim returns the current state for the same caller, or `409` if somebody
+else won; a retried transition comes back `412` because the version moved. Neither is a new
+successful operation, and the interface already shows the server-confirmed result. A retried
+create or comment is different: the server holds an `Idempotency-Key` row and replays the
+original result, so the retry is *free* and the user never sees the blip.
 
 The subtlety that makes it work is where the key comes from. **It is a mutation variable,
 generated once when the user acts** — not inside the request function. TanStack reuses the
@@ -1035,9 +1040,9 @@ server rewrite rule, so the built `dist/` is servable by any static file server.
 
 **Trade-offs.**
 
-- Accepted: no route-level code splitting, so the whole bundle loads at once. At 89 kB gzipped
-  for the entire application, splitting would add a network round trip to save less than the
-  latency it costs.
+- Accepted: no route-level code splitting, so the whole bundle loads at once. At 91.86 kB
+  gzipped for the JS bundle (94.6 kB including CSS), splitting would add a network round trip to
+  save less than the latency it costs.
 - Accepted: hand-written parsing means hand-written edge cases, which is why the router has its
   own test file covering the shapes that must not match.
 - Accepted: the dependency list stays at React, React DOM and TanStack Query at runtime. Every

@@ -109,11 +109,12 @@ without ever reading it. So the real defence is not token storage; it is:
    inserted as text nodes by React. There is no `dangerouslySetInnerHTML` anywhere in the
    frontend and no HTML sanitiser to get wrong, and no `meta` value from the activity feed is
    interpreted as markup.
-2. **A strict `Content-Security-Policy`** in the deployed frontend (see `OPERATIONS.md`),
-   which blocks inline and remote script. This is the control that actually stops injected
-   script from executing.
-3. **A short session lifetime and immediate revocation**, which bound the damage and make
+2. **A short session lifetime and immediate revocation**, which bound the damage and make
    "sign out everywhere" meaningful.
+3. **A strict `Content-Security-Policy` in a real deployment**, which would block inline and
+   remote script. The repository does not ship a CSP today: `OPERATIONS.md` recommends the
+   policy, and `KNOWN_LIMITATIONS.md` records it as deployment hardening. It would complement,
+   not replace, the two controls above.
 
 **Why not an `HttpOnly` cookie, which XSS cannot read?** Because a cookie sent automatically by
 the browser introduces CSRF, and defending against CSRF requires a token, `SameSite`
@@ -126,16 +127,18 @@ configuration and care with cross-origin requests. The trades are:
 | `HttpOnly` cookie | No | Yes, unless mitigated |
 
 Neither is strictly better, and this project chose the one whose weakness is mitigated by
-controls it actually implements (CSP, no HTML injection) over the one whose weakness requires
-additional machinery. A production deployment with a high-value threat model should consider
-`HttpOnly` cookies with `SameSite=Strict` plus an anti-CSRF token.
+controls it actually implements (no HTML injection, short sessions and immediate revocation)
+over the one whose weakness requires additional machinery. A production deployment with a
+high-value threat model should consider `HttpOnly` cookies with `SameSite=Strict` plus an
+anti-CSRF token, and should add the CSP described above.
 
-**Cross-origin requests are restricted, not assumed.** The API allows exactly one origin
-(`CORS_ALLOWED_ORIGINS`, default `http://localhost:5173`) and only the headers the application
-uses — `Authorization`, `Content-Type`, `Idempotency-Key`, `If-Match`. `allow_credentials` is
-`false`, which is correct for a bearer token that the browser must be told to send. The Vite dev
-server is configured with `strictPort: true` so a port clash fails loudly instead of silently
-moving the browser to an origin the API does not allow.
+**Cross-origin requests are restricted, not assumed.** The API allows only the configured
+origins (`CORS_ALLOWED_ORIGINS`, comma-separated; default `http://localhost:5173`) and only
+the headers the application uses — `Authorization`, `Content-Type`, `Idempotency-Key`,
+`If-Match`. `allow_credentials` is `false`, which is correct for a bearer token that the
+browser must be told to send. The Vite dev server is configured with `strictPort: true` so a
+port clash fails loudly instead of silently moving the browser to an origin the API does not
+allow.
 
 **No CSRF tokens are required** with the current design, precisely because the browser never
 attaches the credential on its own.

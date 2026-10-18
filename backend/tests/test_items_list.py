@@ -7,6 +7,7 @@ page cannot repeat or skip an item when new work arrives while somebody is readi
 
 from __future__ import annotations
 
+import base64
 import uuid
 from typing import Any
 
@@ -374,6 +375,17 @@ async def test_a_malformed_cursor_is_reported_rather_than_ignored(
         )
         assert response.status_code == 422, cursor
         assert response.json()["error"]["code"] == "validation_failed"
+
+    # An out-of-range bigint in a UUID-keyed list is also 422 (not a 500).
+    # Encode a cursor with an integer outside signed 64-bit range.
+    out_of_range = (
+        base64.urlsafe_b64encode(b"2026-01-01T00:00:00|99999999999999999999").decode().rstrip("=")
+    )
+    response = await client.get(
+        _items_url(team.id, f"?cursor={out_of_range}"), headers=auth_headers(token)
+    )
+    assert response.status_code == 422, out_of_range
+    assert response.json()["error"]["code"] == "validation_failed"
 
 
 async def test_listing_requires_authentication(client: AsyncClient, db: AsyncSession) -> None:

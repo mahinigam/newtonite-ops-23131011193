@@ -79,10 +79,10 @@ the table; ordinary `UPDATE` and `DELETE` are refused.
 | `ix_work_items_unassigned_urgent` on `(team_id, created_at DESC, id DESC) WHERE assignee_id IS NULL AND status = 'open' AND priority IN ('high','urgent')` | The unassigned-urgent queue. Partial so it stays small and only covers rows that queue can return |
 | `ix_work_items_search_vector` (GIN) | Full-text search over title + description |
 | `ix_activity_events_work_item_id_created_at` on `(work_item_id, created_at DESC, id DESC)` | One item's timeline, newest first — the item activity endpoint |
-| `ix_activity_events_team_id_created_at` on `(team_id, created_at DESC, id DESC)` | A team's recent activity feed, newest first. Also the reason the feed needs no join back to `work_items` |
+| `ix_activity_events_team_id_created_at` on `(team_id, created_at DESC, id DESC)` | A team's recent activity feed, newest first. The event's denormalised `team_id` is the authorization and filter key; the feed joins `work_items` only to read the current item title |
 | `ix_comments_work_item_id_created_at` on `(work_item_id, created_at, id)` | One item's comment thread. Declared ascending because that is the natural way to write it; the API reads it newest-first, which is the same index read backwards (or, for the handful of rows an item actually has, a bitmap scan of those rows and a tiny sort) |
 | `ix_memberships_user_id` on `(user_id)` | "Which teams does this user belong to" — the prefix the composite unique constraint cannot answer |
-| `ix_auth_sessions_user_id` on `(user_id)` | Token lookup and "revoke every session for this user" |
+| `ix_auth_sessions_user_id` on `(user_id)` | "Revoke every session for this user" and per-user session auditing. Token lookup itself uses the unique index on `token_hash` |
 | `ix_outbox_events_pending` on `(next_attempt_at, id) WHERE status = 'pending'` | The worker's claim query, exactly: pending rows, oldest due first. Partial, so the index tracks the backlog rather than everything ever delivered |
 | `ix_notifications_recipient_created` on `(recipient_id, created_at DESC, id DESC)` | A person's notification list, newest first, with `id` as the tie-breaker that makes the keyset cursor total |
 | `ix_notifications_recipient_unread` on `(recipient_id, created_at DESC, id DESC) WHERE read_at IS NULL` | The unread badge. Partial, because the count only ever asks about rows that can be unread |

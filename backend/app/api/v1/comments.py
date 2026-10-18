@@ -80,10 +80,10 @@ async def list_comments(
 ) -> CommentPage:
     """Newest first, with its own cursor.
 
-    The cursor belongs to this list and is not interchangeable with an item list's: a
-    timeline and a page of items are different result sets, and sharing a position
-    between them would be meaningless. An item in a team the caller does not belong to
-    is `404`, exactly as an id that was never issued.
+    The cursor names a position in this thread. It uses the same UUID-keyed syntax as an
+    item list, so a mixed-up cursor is accepted but names a different position; clients
+    must keep each cursor with the list that issued it. An item in a team the caller does
+    not belong to is `404`, exactly as an id that was never issued.
     """
     rows, has_more = await comments.list_comments(
         session,

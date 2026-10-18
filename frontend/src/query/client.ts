@@ -3,9 +3,10 @@
  *
  * Two decisions are worth stating, because both are about correctness rather than taste.
  *
- * **A `401` ends the session, wherever it comes from.** Handled once, in the cache's
- * `onError`, so an expired token returns the user to the sign-in screen instead of
- * leaving a page showing a confusing error it can never recover from.
+ * **A `401` ends the session, wherever it comes from.** One function is registered on both
+ * the query and mutation caches' `onError`, so an expired token returns the user to the
+ * sign-in screen instead of leaving a page showing a confusing error it can never recover
+ * from.
  *
  * **Retrying a mutation is only safe when the request carries an `Idempotency-Key`.**
  * A retried create with the same key returns the first result; a retried transition
