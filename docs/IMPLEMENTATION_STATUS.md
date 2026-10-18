@@ -3,9 +3,8 @@
 A truthful, phase-by-phase record. "Verified" means the listed command was run and its
 result observed in this repository — not that the code looks correct.
 
-**Branch:** `feature/newtonite-operations-platform`, merged to `main`; Phases 7–9 on
-`feature/outbox-notifications`
-**Last updated:** 2026-10-18 (end of Phase 9)
+**Current branch:** `main`; all phases are merged. The phase branches remain in the history.
+**Last updated:** 2026-10-19 (final compliance pass)
 
 ## Phase summary
 
@@ -845,6 +844,41 @@ that `refetch()` would fail it.
 
 **Counts.** The totals are now **234 backend** and **83 frontend**. Earlier phase records keep
 the counts they observed when they were run.
+
+## Final compliance pass — 19 October 2026
+
+The submission requirements were checked against the candidate brief and the university
+execution plan. Deployment is optional and was deliberately left out. The pass found and
+fixed four documentation/config gaps:
+
+- **CORS covered only part of the API.** The existing admin-only
+  `PUT /teams/{team_id}/members/{user_id}` route was not in `allow_methods`, and
+  `Idempotent-Replay` was sent by the API but not exposed to cross-origin JavaScript. Both
+  are fixed in `app/main.py`; `tests/test_cors.py` asserts the preflight allows `PUT` and the
+  conditional headers, and that a simple response exposes `ETag`, `Location` and
+  `Idempotent-Replay`.
+- **`docs/API.md` still said the frontend and outbox worker were unbuilt.** They are
+  implemented and verified; the introduction now reflects that.
+- **The README's capability heading stopped at Phase 7.** It now says through Phase 9, and
+  the README has a short known-limitations section in addition to the full document.
+- **`docs/OPERATIONS.md` referred to an undefined `DATABASE_URL_NO_SCHEME` variable and
+  described the Compose port as if it conflicted with itself.** The safe-reset check now
+  uses a concrete `psql` URL, and the diagnosis row names the local PostgreSQL correctly.
+
+**Verification.** `make check` — ruff format and check, mypy (89 files), eslint,
+`tsc --noEmit`, **236 backend tests**, **83 frontend tests**, and the production build all
+passed. The 2 added tests are `tests/test_cors.py`; no existing test or assertion was
+weakened. A fresh-clone check follows in the submission verification below.
+
+## Submission verification — 19 October 2026
+
+| Check | Command | Result |
+| --- | --- | --- |
+| All gates | `make check` | Passed — 236 backend, 83 frontend, ruff, mypy, eslint, tsc, build |
+| Repository visibility | GitHub API | Public, default branch `main` |
+| Secrets | tracked-file and history scan | Only placeholder `.env.example` values; no PDFs or real credentials tracked |
+| Clean clone | `git clone` into an empty directory, then `docker compose up --build` | See the fresh-clone result recorded with the final commit |
+| Browser CORS contract | `tests/test_cors.py` | Preflight allows `PUT` and conditional headers; response exposes `ETag`, `Location`, `Idempotent-Replay` |
 
 ## How to read this document
 

@@ -4,9 +4,10 @@ Base path: `/api/v1`. The generated OpenAPI schema is served at `/api/v1/openapi
 browsable UI at `/docs`.
 
 **This document lists what is implemented.** Work items, their filters, pagination, claiming,
-the approval workflow, comments and the activity read API are implemented. The frontend and
-the outbox worker are not yet; they are tracked in
-[`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md).
+the approval workflow, comments, the activity read API, notifications, `/me/items` and the
+outbox status endpoint are implemented. The outbox worker and the React client are implemented
+too; their design and verification are in [`ARCHITECTURE.md`](ARCHITECTURE.md),
+[`FRONTEND.md`](FRONTEND.md) and [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md).
 
 ## Authentication
 

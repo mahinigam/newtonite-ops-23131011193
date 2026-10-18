@@ -52,7 +52,7 @@ assignment and a deploy never silently stops delivery. The reasoning is in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
 [`ENGINEERING_DECISIONS.md`](ENGINEERING_DECISIONS.md) 23.
 
-## What works today (Phase 7 — asynchronous delivery, and the person-scoped views)
+## What works today (through Phase 9 — activity feed and asynchronous delivery)
 
 | Capability | Status |
 | --- | --- |
@@ -89,7 +89,7 @@ assignment and a deploy never silently stops delivery. The reasoning is in
 | Optimistic claim with tested rollback and reconciliation to the server's state | Working, tested |
 | Team activity feed: names and links each row's item, date-range and actor filters, paged with its own cursor | Working |
 | Loading, empty, error and conflict states on every server-backed view | Working |
-| Backend test suite against real PostgreSQL | Working (234 tests) |
+| Backend test suite against real PostgreSQL | Working (236 tests) |
 | Frontend test suite (vitest + React Testing Library) | Working (83 tests) |
 | One-command stack: `docker compose up --build` runs database, API, worker and web | Working, verified end to end |
 | Docker Compose PostgreSQL for reviewers | Working |
@@ -422,7 +422,7 @@ The backend suite runs against `TEST_DATABASE_URL` and applies migrations to hea
 no manual preparation is needed beyond creating the empty `newtonite_test` database. The
 frontend suite needs no database: it stubs `fetch`, so it runs in about two seconds.
 
-Current totals, from the commands above: **234 backend tests** in under a minute and **83
+Current totals, from the commands above: **236 backend tests** in under a minute and **83
 frontend tests** in about 2 s. The suites that carry the domain guarantees are worth opening
 first:
 
@@ -521,6 +521,24 @@ docs/                 architecture, frontend, API, decisions, status and review 
 
 Deployment caveats, including the recommended `Content-Security-Policy`, are documented
 in [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
+
+## Known limitations
+
+The full list, with the reason and the next step for each item, is in
+[`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md). The ones most likely to matter in
+a review are:
+
+- **No login rate limiting or account lockout.** The login error is deliberately generic, but
+  repeated guessing is not throttled.
+- **No hosted deployment, TLS termination or CSP.** The repository is a local review
+  environment; [`docs/OPERATIONS.md`](docs/OPERATIONS.md) states what a real deployment must
+  add.
+- **No email or webhook delivery.** In-app notifications are delivered through the outbox;
+  only the second transport is absent.
+- **No member-management screen.** The admin-only membership API exists and is tested, but the
+  web client has no settings view for it.
+- **No browser-driven end-to-end test in CI.** The frontend tests stub the network; the wire
+  format was verified separately against a running API.
 
 ## Next week I would…
 

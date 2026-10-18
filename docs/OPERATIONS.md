@@ -117,7 +117,7 @@ no-op.
 | Login works, then every request returns `401 session_expired` | The session hit its absolute or idle lifetime. Lifetimes are `SESSION_ABSOLUTE_TTL_HOURS` / `SESSION_IDLE_TTL_HOURS`; check the host clock, because a large skew from the database makes freshly issued sessions look stale |
 | Login returns `401 invalid_credentials` for an account you can see in `psql` | The password is wrong, or the account is deactivated (`is_active = false`). The response is deliberately identical in both cases |
 | A user's role change does not take effect | It does, from their next request — roles are read from `memberships` every request and are not stored in the session |
-| Port 5432 already in use by Compose | Compose is mapped to 5433 precisely to avoid this; check `.env` |
+| Port 5432 already in use by a local PostgreSQL | Compose maps its database to 5433 precisely to avoid this; use the 5433 URL from `README.md` step 2 |
 
 Logs are written to standard error at the level set by `LOG_LEVEL`. Set `LOG_LEVEL=DEBUG`
 (and `echo=True` in `create_database`) to see SQL.
@@ -146,7 +146,10 @@ cd backend && uv run alembic upgrade head
 Verify which database you are about to affect before running anything destructive:
 
 ```bash
-psql "$DATABASE_URL_NO_SCHEME" -c 'SELECT current_database(), current_user;'
+# Replace 5432 with 5433 if you use the Compose database, and use the credentials
+# from your own .env if they differ from the development defaults.
+psql "postgresql://newtonite:newtonite_dev_pw@127.0.0.1:5432/newtonite" \
+  -c 'SELECT current_database(), current_user;'
 ```
 
 ## Secret rotation and session invalidation
