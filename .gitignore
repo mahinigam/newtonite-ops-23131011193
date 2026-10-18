@@ -30,3 +30,10 @@ frontend/.vite/
 
 # --- Logs / misc -----------------------------------------------------------
 *.log
+
+# --- Assessment source material --------------------------------------------
+# Third-party briefs and the university execution plan, kept in the working
+# tree for reference only. They are not this project's work and must never be
+# redistributed, so they are excluded at the repository root. Nested paths such
+# as docs/*.pdf are unaffected.
+/*.pdf
