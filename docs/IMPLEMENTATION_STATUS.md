@@ -758,6 +758,7 @@ so every load-bearing claim was checked against the running system rather than r
 | Container stack, built and run | `docker compose up --build` | Four services healthy; API `/readyz` green; worker started and idle |
 | Real-HTTP checks through the container's nginx origin | scripted against `http://localhost:8080` | **26/26 passed** — proxied health, login, claim and its `ETag`, assignment, worker delivery, notification list and count, acknowledgement, `/me/items`, cross-team `404`, stale `412`, activity |
 | Earlier end-to-end suites | The Phase 5 suite (67) and the Phase 6 contract suite (41) | **108/108 passed** on the merged `main` before this phase's changes |
+| Fresh clone from GitHub | `git clone`, `make setup`, `make migrate`, `make seed ITEMS=50` into an empty database, `make check`, then the API and the worker on `:8011` | Migrations `0001`→`0003` and 50 items from scratch; 229 + 79 tests green; **32/32** HTTP checks — idempotent replay, a claim followed by a transition using the claim's `ETag`, an illegal transition, a missing precondition, worker delivery, unread count, acknowledgement, `/me/items`, cursor paging, cross-team `404`, stale `412`, and the `/ops/outbox` role gate |
 
 **What was not weakened to get here.** No test was skipped, deleted or relaxed, and no
 assertion was rewritten to match observed behaviour. Two of the three defects above were in

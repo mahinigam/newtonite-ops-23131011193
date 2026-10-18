@@ -253,8 +253,10 @@ from stored memberships rather than from anything the client sends.
 
 There is deliberately **no `assignee` parameter**. It would turn a personal view into a
 general cross-team list and widen what one token can read; the answer to "who is this for"
-is the token, not a query string. An item appears only while the caller is still a member of
-its team, so leaving a team removes its work from the view immediately.
+is the token, not a query string. An unknown query parameter is ignored rather than consulted,
+so sending `assignee` cannot widen the result either — it simply has nothing to do here. An
+item appears only while the caller is still a member of its team, so leaving a team removes
+its work from the view immediately.
 
 ```json
 { "items": [ … ], "next_cursor": null, "has_more": false, "limit": 25 }

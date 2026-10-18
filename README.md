@@ -435,7 +435,10 @@ first:
 The container image is not exercised by those suites, so it was verified separately:
 `docker compose up --build` followed by 26 checks over real HTTP through the nginx origin —
 login, claim, assignment, worker delivery, unread count, acknowledgement, `/me/items`,
-cross-team `404`, stale `412` and the activity feed. All 26 passed.
+cross-team `404`, stale `412` and the activity feed. All 26 passed. It was then verified again
+from a fresh clone of this repository against an empty database, with the API and the worker
+started as ordinary processes: 32/32 checks passed, including idempotent replay and a claim
+followed by a transition.
 
 ## Repository structure
 
