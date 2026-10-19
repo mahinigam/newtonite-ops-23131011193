@@ -1,10 +1,16 @@
 # Implementation Status
 
-A truthful, phase-by-phase record. "Verified" means the listed command was run and its
-result observed in this repository — not that the code looks correct.
+## Reviewer summary
 
-**Current branch:** `main`; all phases are merged. The phase branches remain in the history.
-**Last updated:** 2026-10-19 (final compliance and documentation accuracy pass)
+**Current state:** The Newtonite application is implemented on `main` as a full-stack operations workflow. It includes a FastAPI API, PostgreSQL, a React/TypeScript client, team-scoped authorization, a server-enforced workflow, append-only activity history, optimistic concurrency checks, idempotent requests, and an asynchronous notification outbox/worker.
+
+**Recorded quality checks:** The final compliance pass recorded `make check` passing with **237 backend tests and 83 frontend tests**, plus formatting, lint, type checks and a production frontend build. The latest public GitHub Actions run can be checked at [CI on GitHub](https://github.com/mahinigam/newtonite-ops-23131011193/actions).
+
+**Known gaps to keep in view:** There is no hosted deployment or browser-driven end-to-end test in CI; no login rate limiting/account lockout; no load test at the challenge's target scale; and refresh-token reuse detection is implemented but not yet covered by a dedicated test. See [Known Limitations](KNOWN_LIMITATIONS.md) for impact and follow-up options.
+
+**Clean-checkout verification:** A fresh GitHub Actions checkout of commit `108bee485e6e1099b0240d7a185a73ba9d1c9729` successfully built the Docker Compose stack, confirmed API readiness at `/readyz` and the web endpoints at `/healthz` and `/`, then tore the stack down. See [the successful run](https://github.com/mahinigam/newtonite-ops-23131011193/actions/runs/39268224992). This is a CI clean-checkout verification, not a claim that Docker was run locally in the editing environment. The earlier, broader 32/32 HTTP check was on an older commit.
+
+A phase is marked complete only where the verification record states what was actually run and observed. This document distinguishes recorded evidence from checks that have not been run.
 
 ## Phase summary
 
@@ -880,7 +886,7 @@ follows in the submission verification below.
 | All gates | `make check` | Passed — 237 backend, 83 frontend, ruff, mypy, eslint, tsc, build |
 | Repository visibility | GitHub API | Public, default branch `main` |
 | Secrets | tracked-file and history scan | Only placeholder `.env.example` values; no PDFs or real credentials tracked |
-| Clean clone | `git clone` into an empty directory, then `docker compose up --build` | Not run for current HEAD (last run at `2579a8c`: 229+79 tests, 32/32 HTTP checks) |
+| Clean-checkout Docker Compose smoke | Fresh GitHub Actions checkout at `108bee485e6e1099b0240d7a185a73ba9d1c9729`; `docker compose up --build -d`, API `/readyz`, web `/healthz` and `/`, then teardown | **Passed** — [workflow run 39268224992](https://github.com/mahinigam/newtonite-ops-23131011193/actions/runs/39268224992); all three CI jobs passed |
 | Browser CORS contract | `tests/test_cors.py` | Preflight allows `PUT` and conditional headers; response exposes `ETag`, `Location`, `Idempotent-Replay` |
 
 ## How to read this document

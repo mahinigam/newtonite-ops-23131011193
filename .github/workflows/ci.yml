@@ -122,3 +122,51 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  docker-compose-smoke:
+    name: Docker Compose (clean checkout)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Exercise the documented one-command reviewer setup from a fresh checkout.
+      - name: Build and start the reviewer stack
+        run: docker compose up --build -d
+
+      - name: Wait for readiness and smoke-test the app
+        shell: bash
+        run: |
+          set -euo pipefail
+          ready=0
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8000/readyz >/dev/null \
+              && curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null \
+              && curl --fail --silent http://127.0.0.1:8080/ >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 5
+          done
+
+          if [[ "$ready" -ne 1 ]]; then
+            echo "The stack did not become ready within five minutes." >&2
+            docker compose ps
+            docker compose logs --no-color
+            exit 1
+          fi
+
+          echo "API readiness: passed"
+          echo "Web entry point: passed"
+
+      - name: Show stack state and logs on failure
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose logs --no-color
+
+      - name: Tear down
+        if: always()
+        run: docker compose down --remove-orphans
+
