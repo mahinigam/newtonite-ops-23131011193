@@ -1,10 +1,16 @@
 # Implementation Status
 
-A truthful, phase-by-phase record. "Verified" means the listed command was run and its
-result observed in this repository — not that the code looks correct.
+## Reviewer summary
 
-**Current branch:** `main`; all phases are merged. The phase branches remain in the history.
-**Last updated:** 2026-10-19 (final compliance and documentation accuracy pass)
+**Current state:** The Newtonite application is implemented on `main` as a full-stack operations workflow. It includes a FastAPI API, PostgreSQL, a React/TypeScript client, team-scoped authorization, a server-enforced workflow, append-only activity history, optimistic concurrency checks, idempotent requests, and an asynchronous notification outbox/worker.
+
+**Recorded quality checks:** The final compliance pass recorded `make check` passing with **237 backend tests and 83 frontend tests**, plus formatting, lint, type checks and a production frontend build. The latest public GitHub Actions run can be checked at [CI on GitHub](https://github.com/mahinigam/newtonite-ops-23131011193/actions).
+
+**Known gaps to keep in view:** There is no hosted deployment or browser-driven end-to-end test in CI; no login rate limiting/account lockout; no load test at the challenge's target scale; and refresh-token reuse detection is implemented but not yet covered by a dedicated test. See [Known Limitations](KNOWN_LIMITATIONS.md) for impact and follow-up options.
+
+**Clean-clone verification:** The earlier end-to-end clean-clone check was performed on an earlier commit, not the final compliance commit. Do not interpret the historical result as a verification of the latest commit. The Docker Compose check for this update is being run separately; its result will be recorded in the submission-verification section only after it finishes.
+
+A phase is marked complete only where the verification record states what was actually run and observed. This document distinguishes recorded evidence from checks that have not been run.
 
 ## Phase summary
 
